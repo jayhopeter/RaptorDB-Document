@@ -29,7 +29,7 @@ namespace RaptorDB
                 _deleted = new BoolIndex(_Path, "_deleted" , ".hoot");
                 _lastDocNum = (int)_docs.Count();
             }
-            _bitmaps = new BitmapIndex(_Path, _FileName + ".mgbmp");
+            _bitmaps = new BitmapIndex(_Path, _FileName + "_hoot.bmp");
             // read words
             LoadWords();
         }
@@ -167,7 +167,7 @@ namespace RaptorDB
 
         private WAHBitArray ExecutionPlan(string filter, int maxsize)
         {
-            _log.Debug("query : " + filter);
+            //_log.Debug("query : " + filter);
             DateTime dt = FastDateTime.Now;
             // query indexes
             string[] words = filter.Split(' ');
@@ -175,7 +175,7 @@ namespace RaptorDB
             if (filter.IndexOfAny(new char[] { '+', '-' }, 0) > 0)
                 defaulttoand = false;
 
-            WAHBitArray bits = null;
+            WAHBitArray bits = WAHBitArray.Fill(maxsize);            
 
             foreach (string s in words)
             {
@@ -231,8 +231,8 @@ namespace RaptorDB
                     bits = DoBitOperation(bits, ba, op, maxsize);
                 }
             }
-            if (bits == null)
-                return new WAHBitArray();
+            //if (bits == null)
+            //    return new WAHBitArray();
 
             // remove deleted docs
             WAHBitArray ret;
@@ -240,7 +240,7 @@ namespace RaptorDB
                 ret = bits.AndNot(_deleted.GetBits());
             else
                 ret = bits;
-            _log.Debug("query time (ms) = " + FastDateTime.Now.Subtract(dt).TotalMilliseconds);
+            //_log.Debug("query time (ms) = " + FastDateTime.Now.Subtract(dt).TotalMilliseconds);
             return ret;
         }
 
@@ -251,13 +251,13 @@ namespace RaptorDB
                 switch (op)
                 {
                     case OPERATION.AND:
-                        bits = c.And(bits);
+                        bits = bits.And(c);
                         break;
                     case OPERATION.OR:
-                        bits = c.Or(bits);
+                        bits = bits.Or(c);
                         break;
                     case OPERATION.ANDNOT:
-                        bits = c.And(bits.Not(maxsize));
+                        bits = bits.And(c.Not(maxsize));
                         break;
                 }
             }
