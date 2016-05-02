@@ -1,6 +1,6 @@
 using System.Reflection;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
+// build number = 202
+// build version = 3.3.2
 
 [assembly: AssemblyVersion("3.0.0.0")]
-[assembly: AssemblyFileVersion("3.2.15.0")]
+[assembly: AssemblyFileVersion("3.3.2.202")]

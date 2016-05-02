@@ -1,7 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Xml.Serialization;
 
 namespace RaptorDB
@@ -27,6 +25,7 @@ namespace RaptorDB
         /// <summary>
         /// Column definitions for the view storage 
         /// </summary>
+        [XmlIgnore]
         public Type Schema { get; set; }
         
         /// <summary>

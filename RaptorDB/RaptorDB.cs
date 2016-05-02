@@ -3,16 +3,22 @@ using System.Collections.Generic;
 using System.Text;
 using System.IO;
 using System.Threading;
-using System.Collections;
 using RaptorDB.Views;
 using System.Linq.Expressions;
-using System.Threading.Tasks;
 using System.Reflection;
 using RaptorDB.Common;
 using System.IO.Compression;
 using System.CodeDom.Compiler;
 using System.Text.RegularExpressions;
 using System.ComponentModel;
+using RaptorDBRest;
+
+// ----- Feature list -------
+// TODO : enum in row schema support
+// TODO : validate view schema with mapper on startup ??
+// TODO : HFKV transaction mode set and rollback handling
+// TODO : fastJSON unsafe string pointer parser
+// TODO : .Between() in predicate support
 
 namespace RaptorDB
 {
@@ -38,25 +44,6 @@ namespace RaptorDB
             CreateTemplateConfigFiles();
 
             Initialize();
-        }
-
-        private void CreateTemplateConfigFiles()
-        {
-            if (File.Exists(_Path + "RaptorDB.config") == false)
-                File.WriteAllText(_Path + "-RaptorDB.config", fastJSON.JSON.ToNiceJSON(new Global(), new fastJSON.JSONParameters { UseExtensions = false }));
-
-            if (File.Exists(_Path + "RaptorDB-Branch.config") == false)
-                File.WriteAllText(_Path + "-RaptorDB-Branch.config", fastJSON.JSON.ToNiceJSON(new Replication.ClientConfiguration(), new fastJSON.JSONParameters { UseExtensions = false }));
-
-            if (File.Exists(_Path + "RaptorDB-Replication.config") == false)
-            {
-                Replication.ServerConfiguration s = new Replication.ServerConfiguration();
-                s.What.Add(new Replication.WhatItem { Name = "default", PackageItemLimit = 10000, Version = 1, B2HQtypes = new List<string> { "*" }, HQ2Btypes = new List<string> { "*" } });
-                s.What.Add(new Replication.WhatItem { Name = "b2", PackageItemLimit = 10000, Version = 1, B2HQtypes = new List<string> { "*" }, HQ2Btypes = new List<string> { "config.*" } });
-                s.Where.Add(new Replication.WhereItem { BranchName = "b1", Password = "123", When = "*/5 * * * *", What = "default" });
-                s.Where.Add(new Replication.WhereItem { BranchName = "b2", Password = "321", When = "*/20 * * * *", What = "b2" });
-                File.WriteAllText(_Path + "-RaptorDB-Replication.config", fastJSON.JSON.ToNiceJSON(s, new fastJSON.JSONParameters { UseExtensions = false }));
-            }
         }
 
         public static RaptorDB Open(string FolderPath)
@@ -90,16 +77,9 @@ namespace RaptorDB
         private CronDaemon _cron;
         private Replication.ReplicationServer _repserver;
         private Replication.ReplicationClient _repclient;
-        //private bool _disposed = false;
-        //private bool _clientReplicationEnabled;
+        private DateTime _startTime = DateTime.Now;
 
-        //public bool SyncNow(string server, int port, string username, string password)
-        //{
-
-        //    return false;
-        //}
-
-        #region [   p u b l i c    i n t e r f a c e   ]
+        #region [            P U B L I C    I N T E R F A C E            ]
         /// <summary>
         /// Save files to RaptorDB
         /// </summary>
@@ -198,6 +178,16 @@ namespace RaptorDB
             }
         }
 
+        internal TimeSpan Uptime()
+        {
+            return DateTime.Now.Subtract(_startTime);
+        }
+
+        internal object FileCount()
+        {
+            return _fileStore.Count();
+        }
+
         /// <summary>
         /// Query any view -> get all rows
         /// </summary>
@@ -268,6 +258,9 @@ namespace RaptorDB
                 return;
 
             _shuttingdown = true;
+
+            if (_restServer != null)
+                _restServer.Stop();
 
             _processinboxTimer.Enabled = false;
             _saveTimer.Enabled = false;
@@ -797,9 +790,211 @@ namespace RaptorDB
             StorageItem<Guid> meta = null;
             return _fileStore.GetBytes(versionNumber, out meta);
         }
+        /// <summary>
+        /// Get the current registered views
+        /// </summary>
+        /// <returns></returns>
+        public List<ViewBase> GetViews()
+        {
+            return _viewManager.GetViews();
+        }
+
+        /// <summary>
+        /// Get the schema for a view
+        /// </summary>
+        /// <param name="view"></param>
+        /// <returns></returns>
+        public ViewRowDefinition GetSchema(string view)
+        {
+            return _viewManager.GetSchema(view);
+        }
+
+        /// <summary>
+        /// Query a view with paging and ordering
+        /// </summary>
+        /// <param name="viewname"></param>
+        /// <param name="filter"></param>
+        /// <param name="start"></param>
+        /// <param name="count"></param>
+        /// <param name="orderby"></param>
+        /// <returns></returns>
+        public Result<object> Query(string viewname, string filter, int start, int count, string orderby)
+        {
+            return _viewManager.Query(viewname, filter, start, count, orderby);
+        }
+
+        /// <summary>
+        /// Query a view with paging and ordering
+        /// </summary>
+        /// <typeparam name="TRowSchema"></typeparam>
+        /// <param name="filter"></param>
+        /// <param name="start"></param>
+        /// <param name="count"></param>
+        /// <param name="orderby"></param>
+        /// <returns></returns>
+        public Result<TRowSchema> Query<TRowSchema>(string filter, int start, int count, string orderby)
+        {
+            return _viewManager.Query<TRowSchema>(filter, start, count, orderby);
+        }
+
+        /// <summary>
+        /// Get the history information for a document
+        /// </summary>
+        /// <param name="docid"></param>
+        /// <returns></returns>
+        public HistoryInfo[] FetchHistoryInfo(Guid docid)
+        {
+            List<HistoryInfo> h = new List<HistoryInfo>();
+
+            foreach (int i in FetchHistory(docid))
+            {
+                HistoryInfo hi = new HistoryInfo();
+                hi.Version = i;
+                var o = _objStore.GetMeta(i);
+                hi.ChangeDate = o.date;
+                if (o.isDeleted == false)
+                    h.Add(hi);
+            }
+            return h.ToArray();
+        }
+
+        /// <summary>
+        /// Get the history information for a file
+        /// </summary>
+        /// <param name="docid"></param>
+        /// <returns></returns>
+        public HistoryInfo[] FetchBytesHistoryInfo(Guid docid)
+        {
+            List<HistoryInfo> h = new List<HistoryInfo>();
+
+            foreach (int i in FetchBytesHistory(docid))
+            {
+                HistoryInfo hi = new HistoryInfo();
+                hi.Version = i;
+                var o = _fileStore.GetMeta(i);
+                hi.ChangeDate = o.date;
+                if (o.isDeleted == false)
+                    h.Add(hi);
+            }
+            return h.ToArray();
+        }
+
+        /// <summary>
+        /// Direct delete from a view
+        /// </summary>
+        /// <typeparam name="TRowSchema"></typeparam>
+        /// <param name="filter"></param>
+        /// <returns></returns>
+        public int ViewDelete<TRowSchema>(Expression<Predicate<TRowSchema>> filter)
+        {
+            // do the delete
+            int c = _viewManager.ViewDelete(filter);
+            if (c > 0)
+            {
+                // save this filter to docs
+                View_delete vd = new View_delete();
+                LINQString lq = new LINQString();
+                lq.Visit(filter);
+                vd.Filter = lq.sb.ToString();
+                vd.Viewname = _viewManager.GetViewName(typeof(TRowSchema));
+                _objStore.SetObject(vd.ID, vd);
+            }
+            return c;
+        }
+
+        /// <summary>
+        /// Direct delete from a view
+        /// </summary>
+        /// <param name="viewname"></param>
+        /// <param name="filter"></param>
+        /// <returns></returns>
+        public int ViewDelete(string viewname, string filter)
+        {
+            // do the delete
+            int c = _viewManager.ViewDelete(viewname, filter);
+            if (c > 0)
+            {
+                // save this filter to docs
+                View_delete vd = new View_delete();
+                vd.Filter = filter;
+                vd.Viewname = viewname;
+                _objStore.SetObject(vd.ID, vd);
+            }
+            return c;
+        }
+
+        /// <summary>
+        /// Direct insert into a view
+        /// </summary>
+        /// <typeparam name="TRowSchema"></typeparam>
+        /// <param name="id"></param>
+        /// <param name="row"></param>
+        /// <returns></returns>
+        public bool ViewInsert<TRowSchema>(Guid id, TRowSchema row)
+        {
+            string vn = _viewManager.GetViewName(typeof(TRowSchema));
+            if (vn != "")
+            {
+                if (_viewManager.ViewInsert(id, row))
+                {
+                    View_insert vi = new View_insert();
+                    vi.Viewname = vn;
+                    vi.RowObject = row;
+                    _objStore.SetObject(vi.ID, vi);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Direct insert into a view
+        /// </summary>
+        /// <param name="viewname"></param>
+        /// <param name="id"></param>
+        /// <param name="row"></param>
+        /// <returns></returns>
+        public bool ViewInsert(string viewname, Guid id, object row)
+        {
+            if (_viewManager.ViewInsert(viewname, id, row))
+            {
+                View_insert vi = new View_insert();
+                vi.Viewname = viewname;
+                vi.RowObject = row;
+                _objStore.SetObject(vi.ID, vi);
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Total number of documents in the storage file including duplicates
+        /// </summary>
+        /// <returns></returns>
+        public long DocumentCount()
+        {
+            return _objStore.Count();
+        }
+
+        public IKeyStoreHF GetKVHF()
+        {
+            return _objHF;
+        }
+
+        public object[] ServerSide(ServerSideFuncWithArgs func, string filter, params object[] args)
+        {
+            return func(this, filter, args).ToArray();
+        }
+
+        public object[] ServerSide<TRowSchema>(ServerSideFuncWithArgs func, Expression<Predicate<TRowSchema>> filter, params object[] args)
+        {
+            LINQString ls = new LINQString();
+            ls.Visit(filter);
+            return func(this, ls.sb.ToString(), args).ToArray();
+        }
         #endregion
 
-        #region [            P R I V A T E     M E T H O D S              ]
+        #region [            P R I V A T E    M E T H O D S              ]
 
         internal string GetViewName(Type type)
         {
@@ -889,8 +1084,6 @@ namespace RaptorDB
 
         private void Initialize()
         {
-            //AppDomain.CurrentDomain.ProcessExit += new EventHandler(CurrentDomain_ProcessExit);
-
             // TODO : read/write global or another object?
             // read raptordb.config here (running parameters)
             if (File.Exists(_Path + "RaptorDB.config"))
@@ -997,6 +1190,11 @@ namespace RaptorDB
             {
                 // if branch.config exists -> start replication client
                 _repclient = new Replication.ReplicationClient(_Path, File.ReadAllText(_Path + "RaptorDB-Branch.config"), _objStore);
+            }
+            if (Global.EnableWebStudio)
+            {
+                _log.Debug("Enabling WEBSTUDIO on port : " + Global.WebStudioPort);
+                _restServer = new RestServer(Global.WebStudioPort, this, _Path, Global.LocalOnlyWebStudio);
             }
         }
 
@@ -1132,18 +1330,8 @@ namespace RaptorDB
         {
             _log.Debug("Upgrading storage file version from " + ver + " to " + StorageFile<int>._CurrentVersion + " on file : " + filename);
             throw new Exception("not implemented yet - contact the author if you need this functionality");
-            // FEATURE : upgrade from v0 to v1
-
-            // FEATURE : upgrade from v1 to v2
             // read from one file and write to the other 
         }
-
-        //private void CurrentDomain_ProcessExit(object sender, EventArgs e)
-        //{
-            
-        //    _log.Debug("appdomain closing");
-        //    Shutdown();
-        //}
 
         private object _slock = new object();
         private void _saveTimer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
@@ -1195,7 +1383,10 @@ namespace RaptorDB
         }
 
         private object _flock = new object();
-        void _fulltextTimer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
+        private Regex _jsonfilter = new Regex("[\\[\\]\"{}:,]", RegexOptions.Compiled);
+        private RestServer _restServer = null;
+
+        private void _fulltextTimer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
         {
             if (_shuttingdown)
                 return;
@@ -1226,6 +1417,7 @@ namespace RaptorDB
                         {
                             // normal string and normal guid 
                             string json = fastJSON.JSON.ToJSON(obj, new fastJSON.JSONParameters { UseEscapedUnicode = false, UseFastGuid = false });
+                            json = _jsonfilter.Replace(json, " "); // filter out json characters
                             _fulltextindex.Set(json, _LastFulltextIndexed);
                         }
                     }
@@ -1257,202 +1449,53 @@ namespace RaptorDB
             _saverepcache.Add(type, m);
             return m;
         }
-        #endregion
+
+        private void CreateTemplateConfigFiles()
+        {
+            if (File.Exists(_Path + "RaptorDB.config") == false)
+                File.WriteAllText(_Path + "-RaptorDB.config", fastJSON.JSON.ToNiceJSON(new Global(), new fastJSON.JSONParameters { UseExtensions = false }));
+
+            if (File.Exists(_Path + "RaptorDB-Branch.config") == false)
+                File.WriteAllText(_Path + "-RaptorDB-Branch.config", fastJSON.JSON.ToNiceJSON(new Replication.ClientConfiguration(), new fastJSON.JSONParameters { UseExtensions = false }));
+
+            if (File.Exists(_Path + "RaptorDB-Replication.config") == false)
+            {
+                Replication.ServerConfiguration s = new Replication.ServerConfiguration();
+                s.What.Add(new Replication.WhatItem { Name = "default", PackageItemLimit = 10000, Version = 1, B2HQtypes = new List<string> { "*" }, HQ2Btypes = new List<string> { "*" } });
+                s.What.Add(new Replication.WhatItem { Name = "b2", PackageItemLimit = 10000, Version = 1, B2HQtypes = new List<string> { "*" }, HQ2Btypes = new List<string> { "config.*" } });
+                s.Where.Add(new Replication.WhereItem { BranchName = "b1", Password = "123", When = "*/5 * * * *", What = "default" });
+                s.Where.Add(new Replication.WhereItem { BranchName = "b2", Password = "321", When = "*/20 * * * *", What = "b2" });
+                File.WriteAllText(_Path + "-RaptorDB-Replication.config", fastJSON.JSON.ToNiceJSON(s, new fastJSON.JSONParameters { UseExtensions = false }));
+            }
+        }
+
+        internal long GetDataFolderSize()
+        {
+            // get data folder size
+            return GetDirectorySize(_Path);
+        }
+
+        internal long GetDirectorySize(string path)
+        {
+            long b = 0;
+            foreach (var p in Directory.GetDirectories(path))
+            {
+                b += GetDirectorySize(p);
+                string[] a = Directory.GetFiles(p, "*.*");
+
+                foreach (string name in a)
+                {
+                    FileInfo info = new FileInfo(name);
+                    b += info.Length;
+                }
+            }
+            return b;
+        }
 
         internal object GetAssemblyForView(string viewname, out string typename)
         {
             return _viewManager.GetAssemblyForView(viewname, out typename);
         }
-
-        /// <summary>
-        /// Get the current registered views
-        /// </summary>
-        /// <returns></returns>
-        public List<ViewBase> GetViews()
-        {
-            return _viewManager.GetViews();
-        }
-
-        /// <summary>
-        /// Get the schema for a view
-        /// </summary>
-        /// <param name="view"></param>
-        /// <returns></returns>
-        public ViewRowDefinition GetSchema(string view)
-        {
-            return _viewManager.GetSchema(view);
-        }
-
-        /// <summary>
-        /// Query a view with paging and ordering
-        /// </summary>
-        /// <param name="viewname"></param>
-        /// <param name="filter"></param>
-        /// <param name="start"></param>
-        /// <param name="count"></param>
-        /// <param name="orderby"></param>
-        /// <returns></returns>
-        public Result<object> Query(string viewname, string filter, int start, int count, string orderby)
-        {
-            return _viewManager.Query(viewname, filter, start, count, orderby);
-        }
-
-        /// <summary>
-        /// Query a view with paging and ordering
-        /// </summary>
-        /// <typeparam name="TRowSchema"></typeparam>
-        /// <param name="filter"></param>
-        /// <param name="start"></param>
-        /// <param name="count"></param>
-        /// <param name="orderby"></param>
-        /// <returns></returns>
-        public Result<TRowSchema> Query<TRowSchema>(string filter, int start, int count, string orderby)
-        {
-            return _viewManager.Query<TRowSchema>(filter, start, count, orderby);
-        }
-
-        /// <summary>
-        /// Get the history information for a document
-        /// </summary>
-        /// <param name="docid"></param>
-        /// <returns></returns>
-        public HistoryInfo[] FetchHistoryInfo(Guid docid)
-        {
-            List<HistoryInfo> h = new List<HistoryInfo>();
-
-            foreach (int i in FetchHistory(docid))
-            {
-                HistoryInfo hi = new HistoryInfo();
-                hi.Version = i;
-                var o = _objStore.GetMeta(i);
-                hi.ChangeDate = o.date;
-                if (o.isDeleted == false)
-                    h.Add(hi);
-            }
-            return h.ToArray();
-        }
-
-        /// <summary>
-        /// Get the history information for a file
-        /// </summary>
-        /// <param name="docid"></param>
-        /// <returns></returns>
-        public HistoryInfo[] FetchBytesHistoryInfo(Guid docid)
-        {
-            List<HistoryInfo> h = new List<HistoryInfo>();
-
-            foreach (int i in FetchBytesHistory(docid))
-            {
-                HistoryInfo hi = new HistoryInfo();
-                hi.Version = i;
-                var o = _fileStore.GetMeta(i);
-                hi.ChangeDate = o.date;
-                if (o.isDeleted == false)
-                    h.Add(hi);
-            }
-            return h.ToArray();
-        }
-
-        /// <summary>
-        /// Direct delete from a view
-        /// </summary>
-        /// <typeparam name="TRowSchema"></typeparam>
-        /// <param name="filter"></param>
-        /// <returns></returns>
-        public int ViewDelete<TRowSchema>(Expression<Predicate<TRowSchema>> filter)
-        {           
-            // do the delete
-            int c = _viewManager.ViewDelete(filter);
-            if (c > 0)
-            {
-                // save this filter to docs
-                View_delete vd = new View_delete();
-                LINQString lq = new LINQString();
-                lq.Visit(filter);
-                vd.Filter = lq.sb.ToString();
-                vd.Viewname = _viewManager.GetViewName(typeof(TRowSchema));
-                _objStore.SetObject(vd.ID, vd);
-            }
-            return c;
-        }
-
-        /// <summary>
-        /// Direct delete from a view
-        /// </summary>
-        /// <param name="viewname"></param>
-        /// <param name="filter"></param>
-        /// <returns></returns>
-        public int ViewDelete(string viewname, string filter)
-        {          
-            // do the delete
-            int c = _viewManager.ViewDelete(viewname, filter);
-            if (c > 0)
-            {
-                // save this filter to docs
-                View_delete vd = new View_delete();
-                vd.Filter = filter;
-                vd.Viewname = viewname;
-                _objStore.SetObject(vd.ID, vd);
-            }
-            return c;
-        }
-
-        /// <summary>
-        /// Direct insert into a view
-        /// </summary>
-        /// <typeparam name="TRowSchema"></typeparam>
-        /// <param name="id"></param>
-        /// <param name="row"></param>
-        /// <returns></returns>
-        public bool ViewInsert<TRowSchema>(Guid id, TRowSchema row)
-        {
-            string vn = _viewManager.GetViewName(typeof(TRowSchema));
-            if (vn != "")
-            {
-                if (_viewManager.ViewInsert(id, row))
-                {
-                    View_insert vi = new View_insert();
-                    vi.Viewname = vn;
-                    vi.RowObject = row;
-                    _objStore.SetObject(vi.ID, vi);
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Direct insert into a view
-        /// </summary>
-        /// <param name="viewname"></param>
-        /// <param name="id"></param>
-        /// <param name="row"></param>
-        /// <returns></returns>
-        public bool ViewInsert(string viewname, Guid id, object row)
-        {
-            if (_viewManager.ViewInsert(viewname, id, row))
-            {
-                View_insert vi = new View_insert();
-                vi.Viewname = viewname;
-                vi.RowObject = row;
-                _objStore.SetObject(vi.ID, vi);
-                return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Total number of documents in the storage file including duplicates
-        /// </summary>
-        /// <returns></returns>
-        public long DocumentCount()
-        {
-            return _objStore.Count();
-        }
-
-        public IKeyStoreHF GetKVHF()
-        {
-            return _objHF;
-        }
+        #endregion
     }
 }

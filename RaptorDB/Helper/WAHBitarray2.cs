@@ -1,7 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
-using System.Collections;
 
 namespace RaptorDB
 {
@@ -117,19 +115,22 @@ namespace RaptorDB
         {
             set
             {
-                if (_state == TYPE.Indexes)
+                lock (_lock)
                 {
-                    // ignore
-                    return;
-                }
-                CheckBitArray();
-                int c = value >> 5;
-                c++;
-                if (c > _uncompressed.Length)
-                {
-                    uint[] ar = new uint[c];
-                    _uncompressed.CopyTo(ar, 0);
-                    _uncompressed = ar;
+                    if (_state == TYPE.Indexes)
+                    {
+                        // ignore
+                        return;
+                    }
+                    CheckBitArray();
+                    int c = value >> 5;
+                    c++;
+                    if (c > _uncompressed.Length)
+                    {
+                        uint[] ar = new uint[c];
+                        _uncompressed.CopyTo(ar, 0);
+                        _uncompressed = ar;
+                    }
                 }
             }
             get
@@ -302,10 +303,8 @@ namespace RaptorDB
             }
             else if (_uncompressed == null)
                 return new uint[] { 0 };
-            uint[] data = _uncompressed;
-            Compress(data);
-            uint[] d = new uint[_compressed.Length];
-            _compressed.CopyTo(d, 0);
+
+            uint[] d = Compress(_uncompressed);
             return d;
         }
 
@@ -434,7 +433,7 @@ namespace RaptorDB
                 return;
             int c = index >> 5;
             c++;
-            if(_uncompressed == null)
+            if (_uncompressed == null)
             {
                 _uncompressed = new uint[c];
                 return;
@@ -516,13 +515,14 @@ namespace RaptorDB
             return (uint)ret;
         }
 
-        private void Compress(uint[] data)
+        private uint[] Compress(uint[] data)
         {
             List<uint> compressed = new List<uint>();
             uint zeros = 0;
             uint ones = 0;
             int count = data.Length << 5;
-            for (int i = 0; i < count; )
+            int i = 0;
+            while (i < count)//for (int i = 0; i < count;)
             {
                 uint num = Take31Bits(data, i);
                 i += 31;
@@ -545,7 +545,7 @@ namespace RaptorDB
             }
             FlushOnes(compressed, ref ones);
             FlushZeros(compressed, ref zeros);
-            _compressed = compressed.ToArray();
+            return compressed.ToArray();
         }
 
         private void FlushOnes(List<uint> compressed, ref uint ones)
@@ -606,7 +606,7 @@ namespace RaptorDB
             }
             else
             {
-                list[pointer] |= (uint)((0xffffffff << ccount) >> off);
+                list[pointer] |= (uint)((0xffffffff << (31 - ccount)) >> off);
                 ccount = 0;
             }
 
@@ -684,28 +684,8 @@ namespace RaptorDB
 
         internal int GetFirst()
         {
-            if (_state == TYPE.Indexes)
-            {
-                return (int)GetOffsets()[0];
-            }
-            else
-            {
-                CheckBitArray();
-                int count = _uncompressed.Length;
-
-                for (int i = 0; i < count; i++)
-                {
-                    if (_uncompressed[i] > 0)
-                    {
-                        for (int j = 0; j < 32; j++)
-                        {
-                            bool b = internalGet((i << 5) + j);
-                            if (b == true)// ones)
-                                return (i << 5) + j;
-                        }
-                    }
-                }
-            }
+            foreach (var i in GetBitIndexes())
+                return i;
             return 0;
         }
     }

@@ -1,15 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Drawing;
 using System.Linq;
-using System.Text;
 using System.Windows.Forms;
-using System.Reflection;
-using RaptorDB;
 using RaptorDB.Common;
 using SampleViews;
-using System.Linq.Expressions;
 using System.IO;
 
 namespace datagridbinding
@@ -167,7 +161,7 @@ namespace datagridbinding
 
             DateTime dt = FastDateTime.Now;
 
-            var qq = rap.ServerSide<LineItem>(Views.ServerSide.Sum_Products_based_on_filter,
+            var qq = rap.ServerSide<LineItem>(Views.ServerSide.Sum_Products_based_on_filter_args,
                 //"product = \"prod 1\""
                 //(LineItem l) => (l.Product == c.val || l.Product == prod3 ) 
                 x => x.Product == c.val || x.Product == prod3
@@ -183,35 +177,35 @@ namespace datagridbinding
             var kv = rap.GetKVHF();
             
             DateTime dt = DateTime.Now;
-            for (int i = 0; i < 100000; i++)
+            for (int i = 0; i < 1000; i++)
             {
                 var o = CreateInvoice(i);
                 kv.SetObjectHF(i.ToString(), o);// new byte[100000]);
             }
             MessageBox.Show("time = " + DateTime.Now.Subtract(dt).TotalSeconds);
 
-            var g = kv.GetObjectHF("1009");
+            var g = kv.GetObjectHF("109");
 
-            for (int i = 0; i < 100000; i++)
-                kv.DeleteKeyHF(i.ToString());
+            //for (int i = 0; i < 100000; i++)
+                //kv.DeleteKeyHF(i.ToString());
             
-            g = kv.GetObjectHF("1009");
-            MessageBox.Show(""+kv.CountHF());
+            //g = kv.GetObjectHF("1009");
+            //MessageBox.Show(""+kv.CountHF());
 
-            foreach (var f in Directory.GetFiles("d:\\pp", "*.*"))
-            {
-                kv.SetObjectHF(f, File.ReadAllBytes(f));
-            }
+            //foreach (var f in Directory.GetFiles("d:\\pp", "*.*"))
+            //{
+                //kv.SetObjectHF(f, File.ReadAllBytes(f));
+            //}
             
-            kv.CompactStorageHF();
+            //kv.CompactStorageHF();
 
-            foreach (var f in Directory.GetFiles("d:\\pp", "*.*"))
-            {
-                var o = kv.GetObjectHF(f);
-                File.WriteAllBytes(f.Replace("\\pp\\", "\\ppp\\"), o as byte[]);
-            }
-            bool b = kv.ContainsHF("aa");
-            var keys = kv.GetKeysHF();
+            //foreach (var f in Directory.GetFiles("d:\\pp", "*.*"))
+            //{
+            //    var o = kv.GetObjectHF(f);
+            //    File.WriteAllBytes(f.Replace("\\pp\\", "\\ppp\\"), o as byte[]);
+            //}
+            //bool b = kv.ContainsHF("aa");
+            //var keys = kv.GetKeysHF();
             //foreach(var o in r.KVHF.EnumerateObjects())
             //{
             //    string s = o.GetType().ToString();
@@ -221,8 +215,8 @@ namespace datagridbinding
         private void testToolStripMenuItem_Click(object sender, EventArgs e)
         {
             GC.Collect(2);
-            //KVHFtest();
-
+            KVHFtest();
+            var ss = rap.FullTextSearch("woodland -oak");
 
             int c = rap.Count<SalesInvoiceViewRowSchema>(x => x.Serial < 100);
             c = rap.Count<SalesInvoiceViewRowSchema>(x => x.Serial != 100);

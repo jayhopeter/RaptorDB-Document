@@ -1,8 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace RaptorDB
+﻿namespace RaptorDB
 {
     public class Global
     {
@@ -106,5 +102,17 @@ namespace RaptorDB
         /// String key MGIndex that stores keys in an external file for smaller index files
         /// </summary>
         public static bool EnableOptimizedStringIndex = true;
+        /// <summary>
+        /// Enable the Web Studio interface
+        /// </summary>
+        public static bool EnableWebStudio = false;
+        /// <summary>
+        /// Web Studio port (default = 91)
+        /// </summary>
+        public static short WebStudioPort = 91;
+        /// <summary>
+        /// Local machine access only Web Studio - no network access (default = true)
+        /// </summary>
+        public static bool LocalOnlyWebStudio = true;
     }
 }

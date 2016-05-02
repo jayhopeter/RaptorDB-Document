@@ -1,3 +1,44 @@
+﻿v3.3.2
+------
+- bug fix edge case duplicates showing in queries 
+
+v3.3.1
+------
+- bug fix mixed property and fields in view schema definition (invalid cast exception on query)
+
+v3.3.0
+------
+- added WEB Studio interface
+- logger keeps last 100 logs for recall
+- bug fix HF storage file seek position overflow 
+
+v3.2.18
+-------
+- usings cleanup
+- FreeMemory() in indexes, saves data first
+- added indexed word list to hOOt index
+- hOOt optimize index saves data first
+- hOOt optimize index will block until done
+- hOOt FindDocuments() is now generic
+- added server side function with object[] args
+- added auto build number incrementor
+- bug fix not equal != convert linq to string in queries
+- upgrade to fastJSON v2.1.15
+- upgrade to fastBJSON v1.4.12
+
+v3.2.17
+-------
+- bug fix empty rows in GenericResult() in client/server mode
+- bug fix if property/field defined in schema but not in entity hence null error when getting rows
+
+v3.2.16
+-------
+- added support for ushort in views (thanks to dragosc)
+- bug fix FetchHistory() return values in server mode (thanks to DrDeadCrash)
+- bug fix edge case bitmap index commits (thanks to dragosc)
+- bug fix hOOt fulltext index shutdown
+- bug fix FullTextSerach() to filter out json characters before indexing
+
 v3.2.15
 -------
 - *breaking change* + in full text search means OR now

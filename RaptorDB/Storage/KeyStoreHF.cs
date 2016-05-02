@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 
 namespace RaptorDB
 {
@@ -19,6 +18,7 @@ namespace RaptorDB
         public int blocknumber;
     }
 
+    // high frequency key value store
     internal class KeyStoreHF : IKeyStoreHF
     {
         MGIndex<string> _keys;
@@ -41,8 +41,6 @@ namespace RaptorDB
         private bool _isDirty = false;
         private string _dirtyFilename = "temp.$";
 
-        // high frequency key value store
-
         public KeyStoreHF(string folder)
         {
             _Path = folder;
@@ -55,12 +53,14 @@ namespace RaptorDB
                 RebuildDataFiles();
             }
             _datastore = new StorageFileHF(_Path + "data.mghf", Global.HighFrequencyKVDiskBlockSize);
-            _keys = new MGIndex<string>(_Path, "keys.idx", 255, Global.PageItemCount, false);
+            _keys = new MGIndex<string>(_Path, "keys.idx", 255, /*Global.PageItemCount,*/ false);
 
             _BlockSize = _datastore.GetBlockSize();
         }
 
-        public KeyStoreHF(string folder, string filename) // mgindex special storage for strings
+        // mgindex special storage for strings ctor -> no idx file
+        //    use SaveData() GetData()
+        public KeyStoreHF(string folder, string filename) 
         {
             _Path = folder;
             Directory.CreateDirectory(_Path);
@@ -197,7 +197,7 @@ namespace RaptorDB
                     //Directory.Delete(_Path + "old", true); // FEATURE : delete or keep?
                     _log.Debug("Re-opening storage file");
                     _datastore = new StorageFileHF(_Path + "data.mghf", Global.HighFrequencyKVDiskBlockSize);
-                    _keys = new MGIndex<string>(_Path, "keys.idx", 255, Global.PageItemCount, false);
+                    _keys = new MGIndex<string>(_Path, "keys.idx", 255, /*Global.PageItemCount,*/ false);
 
                     _BlockSize = _datastore.GetBlockSize();
                 }
@@ -431,7 +431,7 @@ namespace RaptorDB
                         File.Delete(f);
                 }
 
-                keys = new MGIndex<string>(_Path, "keys.idx", 255, Global.PageItemCount, false);
+                keys = new MGIndex<string>(_Path, "keys.idx", 255, /*Global.PageItemCount,*/ false);
 
                 WAHBitArray visited = new WAHBitArray();
 

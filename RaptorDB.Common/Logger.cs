@@ -1,9 +1,8 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Text;
-using System.Collections;
 using System.Threading;
 using System.IO;
+using System.Collections.Generic;
 
 namespace RaptorDB
 {
@@ -30,7 +29,8 @@ namespace RaptorDB
         }
         public static FileLogger Instance { get { return instance; } }
 
-        private Queue _que = new Queue();
+        private Queue<string> _que = new Queue<string>();
+        private Queue<string> _log = new Queue<string>();
         private StreamWriter _output;
         private string _filename;
         private int _sizeLimit = 0;
@@ -39,6 +39,7 @@ namespace RaptorDB
         private bool _showMethodName = false;
         private string _FilePath = "";
         System.Timers.Timer _saveTimer;
+        private int _lastLogsToKeep = 100;
 
         public bool ShowMethodNames
         {
@@ -49,7 +50,7 @@ namespace RaptorDB
         {
             if (_output != null)
                 return;
-            _que = new Queue();
+            _que = new Queue<string>();
             _showMethodName = showmethodnames;
             _sizeLimit = sizelimitKB;
             _filename = filename;
@@ -156,6 +157,11 @@ namespace RaptorDB
                 if (_output != null)
                     _output.Flush();
             }
+            lock (_log)
+            {
+                while (_log.Count > _lastLogsToKeep)
+                    _log.Dequeue();
+            }
         }
 
         private string FormatLog(string log, string type, string meth, string msg, object[] objs)
@@ -182,8 +188,23 @@ namespace RaptorDB
 
         public void Log(string logtype, string type, string meth, string msg, params object[] objs)
         {
+            var l = FormatLog(logtype, type, meth, msg, objs);
             lock (_que)
-                _que.Enqueue(FormatLog(logtype, type, meth, msg, objs));
+                _que.Enqueue(l);
+            lock (_log)
+                _log.Enqueue(l);
+        }
+
+        internal List<string> GetLastLogs()
+        {
+            List<string> l = new List<string>();
+
+            foreach (var s in _log)
+            {
+                l.Add(s);
+            }
+
+            return l;
         }
     }
 
@@ -247,6 +268,11 @@ namespace RaptorDB
         public static void Configure(string filename, int sizelimitKB, bool showmethodnames)
         {
             FileLogger.Instance.Init(filename, sizelimitKB, showmethodnames);
+        }
+
+        public static List<string> GetLastLogs()
+        {
+            return FileLogger.Instance.GetLastLogs();
         }
 
         public static void Shutdown()

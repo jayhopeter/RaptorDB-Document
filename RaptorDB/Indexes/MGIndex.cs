@@ -1,8 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading;
 using System.IO;
 using RaptorDB.Common;
 
@@ -52,7 +49,7 @@ namespace RaptorDB
         public T FirstKey;
         public bool isDirty;
         public SafeDictionary<T, KeyInfo> tree;
-        public List<int> allocblocks = null;
+        public List<int> allocblocks = null; // for string keys in HF key store
     }
 
     #endregion
@@ -66,13 +63,13 @@ namespace RaptorDB
         private IndexFile<T> _index;
         private bool _AllowDuplicates = true;
         private int _LastIndexedRecordNumber = 0;
-        private int _maxPageItems = 0;
+        //private int _maxPageItems = 0;
 
-        public MGIndex(string path, string filename, byte keysize, ushort maxcount, bool allowdups)
+        public MGIndex(string path, string filename, byte keysize, /*ushort maxcount,*/ bool allowdups) 
         {
             _AllowDuplicates = allowdups;
-            _index = new IndexFile<T>(path + Path.DirectorySeparatorChar + filename, keysize, maxcount);
-            _maxPageItems = maxcount;
+            _index = new IndexFile<T>(path + Path.DirectorySeparatorChar + filename, keysize);//, maxcount);
+            //_maxPageItems = maxcount;
             // load page list
             _index.GetPageList(_pageListDiskPages, _pageList, out _LastIndexedRecordNumber);
             if (_pageList.Count == 0)
@@ -92,7 +89,7 @@ namespace RaptorDB
         }
 
         public WAHBitArray Query(T from, T to, int maxsize)
-        {           
+        {
             // TODO : add BETWEEN code here
             T temp = default(T);
             if (from.CompareTo(to) > 0) // check values order
@@ -119,21 +116,11 @@ namespace RaptorDB
             if (exp == RDBExpression.Equal || exp == RDBExpression.NotEqual)
                 return doEqualOp(exp, key, maxsize);
 
-            // TODO : optimize complement search if page count less for the complement pages
-            //bool found = false;
-            //int last = _pageList.Count - 1;
-            //int pos = FindPageOrLowerPosition(key, ref found);
+            // FEATURE : optimize complement search if page count less for the complement pages
 
             if (exp == RDBExpression.Less || exp == RDBExpression.LessEqual)
             {
-                //long c = (pos+1) * _maxPageItems * 70 / 100; // 70% full pages
-                //long inv = maxsize - c;
-                //if (c < inv)
-                    return doLessOp(exp, key);
-                //else
-                //{
-
-                //}
+                return doLessOp(exp, key);
             }
             else if (exp == RDBExpression.Greater || exp == RDBExpression.GreaterEqual)
             {
@@ -266,7 +253,7 @@ namespace RaptorDB
             PageInfo pi;
             Page<T> page = LoadPage(key, out pi);
             bool b = page.tree.Remove(key);
-            // FIX : reset the first key for page ??
+            // TODO : reset the first key for page ??
             if (b)
             {
                 pi.UniqueCount--;
@@ -354,7 +341,7 @@ namespace RaptorDB
                 if (exp == RDBExpression.Equal)
                     return _index.GetDuplicateBitmap(bn);
                 else
-                    return _index.GetDuplicateBitmap(bn).Not(maxsize); 
+                    return _index.GetDuplicateBitmap(bn).Not(maxsize);
             }
             else
                 return new WAHBitArray();
