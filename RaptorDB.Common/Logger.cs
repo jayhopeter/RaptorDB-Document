@@ -1,18 +1,43 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.IO;
-using System.Collections.Generic;
 
 namespace RaptorDB
 {
     public interface ILog
     {
-        void Debug(object msg, params object[] objs);
-        void Error(object msg, params object[] objs);
-        void Info(object msg, params object[] objs);
-        void Warn(object msg, params object[] objs);
-        void Fatal(object msg, params object[] objs);
+        /// <summary>
+        /// Fatal log = log level 5
+        /// </summary>
+        /// <param name="msg"></param>
+        /// <param name="objs"></param>
+        void Fatal(object msg, params object[] objs); // 5
+        /// <summary>
+        /// Error log = log level 4
+        /// </summary>
+        /// <param name="msg"></param>
+        /// <param name="objs"></param>
+        void Error(object msg, params object[] objs); // 4
+        /// <summary>
+        /// Warning log = log level 3
+        /// </summary>
+        /// <param name="msg"></param>
+        /// <param name="objs"></param>
+        void Warn(object msg, params object[] objs);  // 3
+        /// <summary>
+        /// Debug log = log level 2 
+        /// </summary>
+        /// <param name="msg"></param>
+        /// <param name="objs"></param>
+        void Debug(object msg, params object[] objs); // 2
+        /// <summary>
+        /// Info log = log level 1
+        /// </summary>
+        /// <param name="msg"></param>
+        /// <param name="objs"></param>
+        void Info(object msg, params object[] objs);  // 1
     }
 
     internal class FileLogger
@@ -38,8 +63,10 @@ namespace RaptorDB
         private DateTime _lastFileDate;
         private bool _showMethodName = false;
         private string _FilePath = "";
-        System.Timers.Timer _saveTimer;
+        private System.Timers.Timer _saveTimer;
         private int _lastLogsToKeep = 100;
+        internal int _logabove = 1;
+        private string _S = "\\";
 
         public bool ShowMethodNames
         {
@@ -55,17 +82,22 @@ namespace RaptorDB
             _sizeLimit = sizelimitKB;
             _filename = filename;
             // handle folder names as well -> create dir etc.
+            _S = Path.DirectorySeparatorChar.ToString();
             _FilePath = Path.GetDirectoryName(filename);
             if (_FilePath != "")
             {
+
                 _FilePath = Directory.CreateDirectory(_FilePath).FullName;
-                if (_FilePath.EndsWith(Path.DirectorySeparatorChar.ToString()) == false)
-                    _FilePath += Path.DirectorySeparatorChar.ToString();
+                if (_FilePath.EndsWith(_S) == false)
+                    _FilePath += _S;
             }
+
             _output = new StreamWriter(filename, true);
             FileInfo fi = new FileInfo(filename);
             _lastSize = fi.Length;
             _lastFileDate = fi.LastWriteTime;
+            // zip old logs
+            ZipLogs(_FilePath, _lastFileDate);
 
             _saveTimer = new System.Timers.Timer(500);
             _saveTimer.Elapsed += new System.Timers.ElapsedEventHandler(_saveTimer_Elapsed);
@@ -145,6 +177,8 @@ namespace RaptorDB
                                Path.GetFileNameWithoutExtension(_filename) +
                                "." + count.ToString("0000") +
                                "." + _lastFileDate.ToString("yyyy-MM-dd"));
+                            // compress old logs here
+                            ZipLogs(_FilePath, _lastFileDate);
 
                             _output = new StreamWriter(_filename, true);
                             _lastFileDate = DateTime.Now;
@@ -161,6 +195,31 @@ namespace RaptorDB
             {
                 while (_log.Count > _lastLogsToKeep)
                     _log.Dequeue();
+            }
+        }
+
+        private void ZipLogs(string path, DateTime lastFileDate)
+        {
+            path = new DirectoryInfo(path).FullName;
+            var prefix = path;
+            var files = Directory.GetFiles(path, "*-*");
+            if (files.Length > 0)
+            {
+                var fn = lastFileDate.ToString("yyyy-MM--dd") + ".zip";
+                path += "old" + _S;
+                if (Directory.Exists(path) == false)
+                {
+                    fn = "0000-00-00.zip";
+                    Directory.CreateDirectory(path);
+                }
+                
+                var zip = System.IO.Compression.ZipStorer.Create(path + fn, "");
+                foreach (var f in files)
+                {
+                    zip.AddFile(System.IO.Compression.ZipStorer.Compression.Deflate, f, f.Replace(prefix, ""), "");
+                    File.Delete(f);
+                }
+                zip.Close();
             }
         }
 
@@ -206,6 +265,11 @@ namespace RaptorDB
 
             return l;
         }
+
+        public void SetLogLevel(int abovelevel)
+        {
+            _logabove = abovelevel;
+        }
     }
 
     internal class logger : ILog
@@ -230,30 +294,33 @@ namespace RaptorDB
         }
 
         #region ILog Members
-
-        public void Debug(object msg, params object[] objs)
+        public void Fatal(object msg, params object[] objs)
         {
-            log("DEBUG", "" + msg, objs);
+            log("FATAL", "" + msg, objs);
         }
 
         public void Error(object msg, params object[] objs)
         {
-            log("ERROR", "" + msg, objs);
-        }
-
-        public void Info(object msg, params object[] objs)
-        {
-            log("INFO", "" + msg, objs);
+            if (FileLogger.Instance._logabove <= 4)
+                log("ERROR", "" + msg, objs);
         }
 
         public void Warn(object msg, params object[] objs)
         {
-            log("WARN", "" + msg, objs);
+            if (FileLogger.Instance._logabove <= 3)
+                log("WARN", "" + msg, objs);
         }
 
-        public void Fatal(object msg, params object[] objs)
+        public void Debug(object msg, params object[] objs)
         {
-            log("FATAL", "" + msg, objs);
+            if (FileLogger.Instance._logabove <= 2)
+                log("DEBUG", "" + msg, objs);
+        }
+
+        public void Info(object msg, params object[] objs)
+        {
+            if (FileLogger.Instance._logabove <= 1)
+                log("INFO", "" + msg, objs);
         }
         #endregion
     }
@@ -278,6 +345,11 @@ namespace RaptorDB
         public static void Shutdown()
         {
             FileLogger.Instance.ShutDown();
+        }
+
+        public static void SetLogLevel(int abovelevel)
+        {
+            FileLogger.Instance.SetLogLevel(abovelevel);
         }
     }
 }

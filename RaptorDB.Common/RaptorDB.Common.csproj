@@ -17,7 +17,7 @@
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
     <OutputPath>bin\Debug\</OutputPath>
-    <DefineConstants>TRACE;DEBUG;NETSERVER; NETJSON; net4</DefineConstants>
+    <DefineConstants>TRACE;DEBUG;NETSERVER; NETJSON; net4;NET4</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
@@ -73,6 +73,7 @@
     <Compile Include="RaptorDBClient.cs" />
     <Compile Include="SafeDictionary.cs" />
     <Compile Include="View.cs" />
+    <Compile Include="ZipStorer.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>

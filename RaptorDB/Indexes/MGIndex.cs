@@ -58,14 +58,15 @@ namespace RaptorDB
     {
         ILog _log = LogManager.GetLogger(typeof(MGIndex<T>));
         private SafeSortedList<T, PageInfo> _pageList = new SafeSortedList<T, PageInfo>();
-        private SafeDictionary<int, Page<T>> _cache = new SafeDictionary<int, Page<T>>();
+        //private SafeDictionary<int, Page<T>> _cache = new SafeDictionary<int, Page<T>>();
+        private SafeSortedList<int, Page<T>> _cache = new SafeSortedList<int, Page<T>>();
         private List<int> _pageListDiskPages = new List<int>();
         private IndexFile<T> _index;
         private bool _AllowDuplicates = true;
         private int _LastIndexedRecordNumber = 0;
         //private int _maxPageItems = 0;
 
-        public MGIndex(string path, string filename, byte keysize, /*ushort maxcount,*/ bool allowdups) 
+        public MGIndex(string path, string filename, byte keysize, /*ushort maxcount,*/ bool allowdups)
         {
             _AllowDuplicates = allowdups;
             _index = new IndexFile<T>(path + Path.DirectorySeparatorChar + filename, keysize);//, maxcount);
@@ -90,7 +91,7 @@ namespace RaptorDB
 
         public WAHBitArray Query(T from, T to, int maxsize)
         {
-            // TODO : add BETWEEN code here
+            WAHBitArray bits = new WAHBitArray();
             T temp = default(T);
             if (from.CompareTo(to) > 0) // check values order
             {
@@ -101,13 +102,60 @@ namespace RaptorDB
             // find first page and do > than
             bool found = false;
             int startpos = FindPageOrLowerPosition(from, ref found);
-
             // find last page and do < than
             int endpos = FindPageOrLowerPosition(to, ref found);
+            bool samepage = startpos == endpos;
 
-            // do all pages in between
+            // from key page
+            Page<T> page = LoadPage(_pageList.GetValue(startpos).PageNumber);
+            T[] keys = page.tree.Keys();
+            Array.Sort(keys);
 
-            return new WAHBitArray();
+            // find better start position rather than 0
+            int pos = Array.BinarySearch<T>(keys, from); // FEATURE : rewrite??
+            if (pos < 0) pos = ~pos;
+
+            for (int i = pos; i < keys.Length; i++)
+            {
+                T k = keys[i];
+                int bn = page.tree[k].DuplicateBitmapNumber;
+
+                if (samepage)
+                {
+                    if (k.CompareTo(from) >= 0 && k.CompareTo(to) <= 0) // if from,to same page
+                        bits = bits.Or(_index.GetDuplicateBitmap(bn));
+                }
+                else
+                {
+                    if (k.CompareTo(from) >= 0)
+                        bits = bits.Or(_index.GetDuplicateBitmap(bn));
+                }
+            }
+            if (!samepage)
+            {
+                // to key page
+                page = LoadPage(_pageList.GetValue(endpos).PageNumber);
+                keys = page.tree.Keys();
+                Array.Sort(keys);
+                // find better end position rather than last key
+                pos = Array.BinarySearch<T>(keys, to);
+                if (pos < 0) pos = ~pos;
+
+                for (int i = 0; i <= pos; i++)
+                {
+                    T k = keys[i];
+                    int bn = page.tree[k].DuplicateBitmapNumber;
+
+                    if (k.CompareTo(to) <= 0)
+                        bits = bits.Or(_index.GetDuplicateBitmap(bn));
+                }
+                // do all pages in between
+                for (int i = startpos + 1; i < endpos; i++)
+                {
+                    doPageOperation(ref bits, i);
+                }
+            }
+            return bits;
         }
 
         public WAHBitArray Query(RDBExpression exp, T from, int maxsize)
@@ -183,8 +231,8 @@ namespace RaptorDB
 
         public void SaveIndex()
         {
-            _log.Debug("Total split time (s) = " + _totalsplits);
-            _log.Debug("Total pages = " + _pageList.Count);
+            //_log.Debug("Total split time (s) = " + _totalsplits);
+            //_log.Debug("Total pages = " + _pageList.Count);
             int[] keys = _cache.Keys();
             Array.Sort(keys);
             // save index to disk
@@ -205,7 +253,7 @@ namespace RaptorDB
         {
             SaveIndex();
             // save page list
-            _index.SavePageList(_pageList, _pageListDiskPages);
+            //_index.SavePageList(_pageList, _pageListDiskPages);
             // shutdown
             _index.Shutdown();
         }
@@ -216,12 +264,13 @@ namespace RaptorDB
             try
             {
                 List<int> free = new List<int>();
-                foreach (var c in _cache)
+                foreach (var k in _cache.Keys())
                 {
-                    if (c.Value.isDirty == false)
-                        free.Add(c.Key);
+                    var val = _cache[k];
+                    if (val.isDirty == false)
+                        free.Add(k);
                 }
-                _log.Debug("releasing page count = " + free.Count + " out of " + _cache.Count);
+                _log.Info("releasing page count = " + free.Count + " out of " + _cache.Count);
                 foreach (var i in free)
                     _cache.Remove(i);
             }
@@ -281,8 +330,8 @@ namespace RaptorDB
             Array.Sort(keys);
 
             // find better start position rather than 0
-            pos = Array.IndexOf<T>(keys, key);
-            if (pos == -1) pos = 0;
+            pos = Array.BinarySearch<T>(keys, key);
+            if (pos < 0) pos = ~pos;
 
             for (int i = pos; i < keys.Length; i++)
             {
@@ -313,7 +362,10 @@ namespace RaptorDB
             Page<T> page = LoadPage(_pageList.GetValue(pos).PageNumber);
             T[] keys = page.tree.Keys();
             Array.Sort(keys);
-            for (int i = 0; i < keys.Length; i++)
+            // find better end position rather than last key
+            pos = Array.BinarySearch<T>(keys, key);
+            if (pos < 0) pos = ~pos;
+            for (int i = 0; i <= pos; i++)
             {
                 T k = keys[i];
                 if (k.CompareTo(key) > 0)
@@ -344,7 +396,12 @@ namespace RaptorDB
                     return _index.GetDuplicateBitmap(bn).Not(maxsize);
             }
             else
-                return new WAHBitArray();
+            {
+                if (exp == RDBExpression.NotEqual)
+                    return new WAHBitArray().Not(maxsize);
+                else
+                    return new WAHBitArray();
+            }
         }
 
         private void doPageOperation(ref WAHBitArray res, int pageidx)

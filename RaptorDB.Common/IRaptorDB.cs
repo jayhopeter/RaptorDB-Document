@@ -57,7 +57,6 @@ namespace RaptorDB.Common
         /// <returns></returns>
         bool Save<T>(Guid docID, T document);
 
-
         /// <summary>
         /// Query all data in a view
         /// </summary>
@@ -123,6 +122,13 @@ namespace RaptorDB.Common
         /// <param name="docID"></param>
         /// <returns></returns>
         object Fetch(Guid docID);
+
+        /// <summary>
+        /// Fetch a Document when you know the type
+        /// </summary>
+        /// <param name="docID"></param>
+        /// <returns></returns>
+        T Fetch<T>(Guid docID) where T : class;
 
         /// <summary>
         /// Fetch a file bytes
@@ -205,7 +211,6 @@ namespace RaptorDB.Common
         /// <param name="filter"></param>
         /// <returns></returns>
         int[] FullTextSearch(string filter);
-
 
         // new query model
         /// <summary>

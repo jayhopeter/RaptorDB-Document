@@ -32,7 +32,8 @@ namespace RaptorDB
                     _uncompressed = ints;
                     break;
                 case TYPE.Indexes:
-                    _offsets = new Dictionary<uint, bool>();
+                    _offsets = new SortedList<uint, bool>(); 
+                            //new Dictionary<uint, bool>();
                     foreach (var i in ints)
                         _offsets.Add(i, true);
                     break;
@@ -41,7 +42,8 @@ namespace RaptorDB
 
         private uint[] _compressed;
         private uint[] _uncompressed;
-        private Dictionary<uint, bool> _offsets = new Dictionary<uint, bool>();
+        //private Dictionary<uint, bool> _offsets = new Dictionary<uint, bool>();
+        private SortedList<uint, bool> _offsets = new SortedList<uint, bool>();
         private uint _curMax = 0;
         private TYPE _state;
         public bool isDirty = false;
@@ -87,9 +89,6 @@ namespace RaptorDB
 
                     if (val == true)
                     {
-                        //    bool b = false;
-                        //    if (_offsets.TryGetValue((uint)index, out b) == false)
-                        //        _offsets.Add((uint)index, true);
                         _offsets[(uint)index] = true;
                         // set max
                         if (index > _curMax)
@@ -283,9 +282,12 @@ namespace RaptorDB
             {
                 if (_uncompressed != null)
                 {
-                    Compress(_uncompressed);
-                    _uncompressed = null;
-                    _state = TYPE.WAH;
+                    lock (_lock)
+                    {
+                        _compressed = Compress(_uncompressed);
+                        _uncompressed = null;
+                        _state = TYPE.WAH;
+                    }
                 }
             }
         }
@@ -297,7 +299,6 @@ namespace RaptorDB
             ChangeTypeIfNeeded();
             if (_state == TYPE.Indexes)
             {
-                //data = UnpackOffsets();
                 type = TYPE.Indexes;
                 return GetOffsets();
             }
@@ -423,7 +424,8 @@ namespace RaptorDB
                 foreach (var i in _offsets.Keys)
                     Set((int)i, true);
                 // clear list
-                _offsets = new Dictionary<uint, bool>();
+                _offsets = new SortedList<uint, bool>();
+                 //new Dictionary<uint, bool>();
             }
         }
 
@@ -446,7 +448,7 @@ namespace RaptorDB
             }
         }
 
-        private void ResizeAsNeeded(List<uint> list, int index)
+        private static void ResizeAsNeeded(List<uint> list, int index)
         {
             int count = index >> 5;
 
@@ -495,7 +497,7 @@ namespace RaptorDB
         }
 
         #region compress / uncompress
-        private uint Take31Bits(uint[] data, int index)
+        private static uint Take31Bits(uint[] data, int index)
         {
             ulong l1 = 0;
             ulong l2 = 0;
@@ -515,7 +517,7 @@ namespace RaptorDB
             return (uint)ret;
         }
 
-        private uint[] Compress(uint[] data)
+        private static uint[] Compress(uint[] data)
         {
             List<uint> compressed = new List<uint>();
             uint zeros = 0;
@@ -548,7 +550,7 @@ namespace RaptorDB
             return compressed.ToArray();
         }
 
-        private void FlushOnes(List<uint> compressed, ref uint ones)
+        private static void FlushOnes(List<uint> compressed, ref uint ones)
         {
             if (ones > 0)
             {
@@ -558,7 +560,7 @@ namespace RaptorDB
             }
         }
 
-        private void FlushZeros(List<uint> compressed, ref uint zeros)
+        private static void FlushZeros(List<uint> compressed, ref uint zeros)
         {
             if (zeros > 0)
             {
@@ -568,9 +570,9 @@ namespace RaptorDB
             }
         }
 
-        private void Write31Bits(List<uint> list, int index, uint val)
+        private static void Write31Bits(List<uint> list, int index, uint val)
         {
-            this.ResizeAsNeeded(list, index + 32);
+            ResizeAsNeeded(list, index + 32);
 
             int off = (index % 32);
             int pointer = index >> 5;
@@ -587,7 +589,7 @@ namespace RaptorDB
 
         private void WriteOnes(List<uint> list, int index, uint count)
         {
-            this.ResizeAsNeeded(list, index);
+            ResizeAsNeeded(list, index);
 
             int off = index % 32;
             int pointer = index >> 5;
@@ -598,7 +600,7 @@ namespace RaptorDB
             if (pointer >= list.Count)
                 list.Add(0);
 
-            if (ccount > x || x == 32) //current pointer
+            if (ccount > x )//|| x == 32) //current pointer
             {
                 list[pointer] |= (uint)((0xffffffff >> off));
                 ccount -= x;
@@ -606,7 +608,7 @@ namespace RaptorDB
             }
             else
             {
-                list[pointer] |= (uint)((0xffffffff << (31 - ccount)) >> off);
+                list[pointer] |= (uint)((0xffffffff << (32 - ccount)) >> off);
                 ccount = 0;
             }
 
@@ -652,7 +654,7 @@ namespace RaptorDB
                 else
                 {
                     uint count = ci & 0x3fffffff;
-                    if ((ci & 0x40000000) > 0) // ones count
+                    if ((ci & 0x40000000) != 0) // ones count
                         WriteOnes(list, index, count);
 
                     index += (int)count;
@@ -676,7 +678,7 @@ namespace RaptorDB
                 uint[] ints = new uint[c];
                 for (int i = 0; i < c - 1; i++)
                     ints[i] = 0xffffffff;
-                ints[c - 1] = 0xffffffff << (32 - r);
+                ints[c - 1] = 0xffffffff << (31 - r);
                 return new WAHBitArray(TYPE.Bitarray, ints);
             }
             return new WAHBitArray();

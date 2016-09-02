@@ -11,14 +11,12 @@ using System.IO.Compression;
 using System.CodeDom.Compiler;
 using System.Text.RegularExpressions;
 using System.ComponentModel;
-using RaptorDBRest;
 
 // ----- Feature list -------
 // TODO : enum in row schema support
 // TODO : validate view schema with mapper on startup ??
 // TODO : HFKV transaction mode set and rollback handling
-// TODO : fastJSON unsafe string pointer parser
-// TODO : .Between() in predicate support
+// TODO : fastJSON unsafe string pointer parser ??
 
 namespace RaptorDB
 {
@@ -53,7 +51,7 @@ namespace RaptorDB
 
         private string _S = Path.DirectorySeparatorChar.ToString();
         private ILog _log = LogManager.GetLogger(typeof(RaptorDB));
-        private Views.ViewManager _viewManager;
+        private ViewManager _viewManager;
         private KeyStore<Guid> _objStore;
         private KeyStore<Guid> _fileStore;
         private KeyStoreHF _objHF;
@@ -125,7 +123,7 @@ namespace RaptorDB
             string viewname = _viewManager.GetPrimaryViewForType(data.GetType());
             if (viewname == "" && Global.RequirePrimaryView == true)
             {
-                _log.Debug("Primary View not defined for object : " + data.GetType());
+                _log.Warn("Primary View not defined for object : " + data.GetType());
                 return false;
             }
             _pauseindexer = true;
@@ -273,8 +271,7 @@ namespace RaptorDB
             if (_repclient != null)
                 _repclient.Shutdown();
 
-            // TODO : write global or something else?
-            //if (File.Exists(_Path + "RaptorDB.config") == false)
+            // feature : write global or something else?
             File.WriteAllText(_Path + "RaptorDB.config", fastJSON.JSON.ToNiceJSON(new Global(), new fastJSON.JSONParameters { UseExtensions = false }));
             if (_cron != null)
                 _cron.Stop();
@@ -1056,7 +1053,7 @@ namespace RaptorDB
             if (list != null)
                 foreach (string name in list)
                 {
-                    _log.Debug("Saving to consistent view : " + name);
+                    //_log.Info("Saving to consistent view : " + name);
                     _viewManager.Insert(name, docid, data);
                 }
         }
@@ -1194,7 +1191,7 @@ namespace RaptorDB
             if (Global.EnableWebStudio)
             {
                 _log.Debug("Enabling WEBSTUDIO on port : " + Global.WebStudioPort);
-                _restServer = new RestServer(Global.WebStudioPort, this, _Path, Global.LocalOnlyWebStudio);
+                _restServer = new rdbRest(Global.WebStudioPort, this, _Path, Global.LocalOnlyWebStudio);
             }
         }
 
@@ -1322,7 +1319,7 @@ namespace RaptorDB
                 _objStore.FreeMemory();
                 _fileStore.FreeMemory();
                 _objHF.FreeMemory();
-                GC.Collect(2);
+                GC.Collect(GC.MaxGeneration);
             }
         }
 
@@ -1384,7 +1381,7 @@ namespace RaptorDB
 
         private object _flock = new object();
         private Regex _jsonfilter = new Regex("[\\[\\]\"{}:,]", RegexOptions.Compiled);
-        private RestServer _restServer = null;
+        private rdbRest _restServer = null;
 
         private void _fulltextTimer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
         {
@@ -1496,6 +1493,12 @@ namespace RaptorDB
         {
             return _viewManager.GetAssemblyForView(viewname, out typename);
         }
+
+        public T Fetch<T>(Guid docID) where T : class
+        {
+            return Fetch(docID) as T;
+        }
+
         #endregion
     }
 }

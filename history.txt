@@ -1,4 +1,75 @@
-﻿v3.3.2
+﻿v3.3.12
+-------
+- added In<T>() e.g. x => x.Serial.In(1,3,5,7) or "serial.in(1,3,5,7)"
+- query cache for Count() and all other overloads
+- code refactoring/cleanup in ViewHandler.cs
+- date parts work with In() e.g. x => x.Date.Year.In(2000,2001)
+- date parts work with Between() e.g. x => x.Date.Year.Between(2000,2010)
+
+v3.3.11
+-------
+- added query bitmap caching for faster queries
+
+v3.3.10
+-------
+- code cleanup
+- generic Between<T>()
+- bug fix BitmapIndex.FreeMemory() 
+- bug fix MGIndex.FreeMemory()
+- added generic Fetch<T>() (thanks to Norbert Haberl)
+- added ZipStorer from [https://github.com/jaime-olivares/zipstorer] (thanks to Jaime Olivares)
+- added auto compress old log files
+
+v3.3.9
+------
+- query date parts e.g. x => x.Date.Year == 2016 or "date.year = 2016"
+- Between() for dates e.g. x => x.Date.Between("2000-1-1","2002-6-16")
+- optimized internal query engine for ranges
+- internal query from to implementation 
+- Between() for int, long, decimal
+
+v3.3.8
+------
+- synced with hOOt
+- added nscript.exe tool
+- added sample.cs test script with command line run
+- changed log message types
+- bug fix fulltext search  
+- fulltext tokenizer breaks a.b.c words and numbers
+
+v3.3.6
+------
+- upgrade to fastJSON v2.1.18
+- upgrade to fastBinaryJSON v1.4.15
+- changed default view.ConsistentSaveToThisView = true
+- changed default view.isPrimaryList = true
+- re-factored web server
+- restructured nav.js
+
+v3.3.5
+------
+- bug fix != in query return all rows if RH expression not found (thanks to Lutz Wellhausen)
+- linq (x => true) predicate returns all rows
+- linq (x => false) predicate returns no rows
+
+v3.3.4
+------
+- streamlined shutdown process (no extra index saves)
+- web ui content height set to browser height
+- memory usage reduction in BimapIndex (removed record cache)
+- memory usage reduction in WAHBitArray (offset Dictionary -> SortedList)
+- memory usage reduction in MGIndex (cache Dictionary -> SortedList)
+- memory usage reduction in Hoot (words Dictionary -> SortedList)
+- log error if web server started when not run as administrator
+- frmMain form close handles shutdown correctly
+- changed default Globals.FreeMemoryTimerSeconds to 5 mins from 30 mins
+
+v3.3.3
+------
+- bug fix SafeSortedList.Add()
+- bug fix WAHBitArray.FreeMemory()
+
+v3.3.2
 ------
 - bug fix edge case duplicates showing in queries 
 

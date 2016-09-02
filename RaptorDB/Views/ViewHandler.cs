@@ -19,7 +19,6 @@ namespace RaptorDB.Views
         {
             Columns = new List<KeyValuePair<string, Type>>();
         }
-        public string Name { get; set; }
         public List<KeyValuePair<string, Type>> Columns { get; set; }
 
         public void Add(string name, Type type)
@@ -55,23 +54,26 @@ namespace RaptorDB.Views
         private List<string> _colnames = new List<string>();
         private RowFill _rowfiller;
         private ViewRowDefinition _schema;
+        private ViewRowDefinition _datecolumns;
         private SafeDictionary<int, tran_data> _transactions = new SafeDictionary<int, tran_data>();
         private SafeDictionary<string, int> _nocase = new SafeDictionary<string, int>();
         private Dictionary<string, byte> _idxlen = new Dictionary<string, byte>();
 
         private System.Timers.Timer _saveTimer;
         Type basetype; // used for mapper
-        dynamic mapper;
+        dynamic _mapper;
         bool _isDirty = false;
         private string _dirtyFilename = "temp.$";
         private bool _stsaving = false;
         private int _RaptorDBVersion = 3; // used for engine changes to views
         private string _RaptorDBVersionFilename = "RaptorDB.version";
 
-        private object _stlock = new object();
+        private SafeDictionary<object, WAHBitArray> _queryCache = new SafeDictionary<object, WAHBitArray>();
+
+        private object _savetimerlock = new object();
         void _saveTimer_Elapsed(object sender, System.Timers.ElapsedEventArgs e)
         {
-            lock (_stlock)
+            lock (_savetimerlock)
             {
                 _stsaving = true;
                 foreach (var i in _indexes)
@@ -147,7 +149,7 @@ namespace RaptorDB.Views
                 Directory.CreateDirectory(_Path);
             }
             // load indexes here
-            CreateLoadIndexes(_schema);
+            CreateLoadIndexes();
 
             _deletedRows = new BoolIndex(_Path, _view.Name, ".deleted");
 
@@ -155,7 +157,7 @@ namespace RaptorDB.Views
 
             CreateResultRowFiller();
 
-            mapper = view.Mapper;
+            _mapper = view.Mapper;
             // looking for the T in View<T>
             if (view.GetType().GetGenericArguments().Length == 1) // HACK : kludge change when possible 
                 basetype = view.GetType().GetGenericArguments()[0];
@@ -182,7 +184,7 @@ namespace RaptorDB.Views
                 i.Value.FreeMemory();
 
             _deletedRows.FreeMemory();
-            InvalidateSortCache();
+            InvalidateCaches();
         }
 
         internal void Commit(int ID)
@@ -216,8 +218,8 @@ namespace RaptorDB.Views
                 if (view.Mapper != null)
                     view.Mapper(api, guid, doc);
             }
-            else if (mapper != null)
-                mapper(api, guid, doc);
+            else if (_mapper != null)
+                _mapper(api, guid, doc);
 
             // map objects to rows
             foreach (var d in api.emitobj)
@@ -237,7 +239,7 @@ namespace RaptorDB.Views
                 // insert new items into view
                 InsertRowsWithIndexUpdate(d.Key, d.Value);
             }
-            InvalidateSortCache();
+            InvalidateCaches();
         }
 
         internal bool InsertTransaction<T>(Guid docid, T doc)
@@ -258,8 +260,8 @@ namespace RaptorDB.Views
                     return false;
                 }
             }
-            else if (mapper != null)
-                mapper(api, docid, doc);
+            else if (_mapper != null)
+                _mapper(api, docid, doc);
 
             if (api._RollBack == true)
                 return false;
@@ -268,7 +270,6 @@ namespace RaptorDB.Views
             foreach (var d in api.emitobj)
                 api.emit.Add(d.Key, ExtractRows(d.Value));
 
-            //Dictionary<Guid, List<object[]>> rows = new Dictionary<Guid, List<object[]>>();
             tran_data data = new tran_data();
             if (_transactions.TryGetValue(Thread.CurrentThread.ManagedThreadId, out data))
             {
@@ -285,13 +286,6 @@ namespace RaptorDB.Views
             return true;
         }
 
-        // FEATURE : add query caching here
-        SafeDictionary<string, LambdaExpression> _lambdacache = new SafeDictionary<string, LambdaExpression>();
-        internal Result<object> Query(string filter, int start, int count)
-        {
-            return Query(filter, start, count, "");
-        }
-
         internal Result<object> Query(string filter, int start, int count, string orderby)
         {
             filter = filter.Trim();
@@ -301,26 +295,10 @@ namespace RaptorDB.Views
             DateTime dt = FastDateTime.Now;
             _log.Debug("query : " + _view.Name);
             _log.Debug("query : " + filter);
-            _log.Debug("orderby : " + orderby);
+            if (orderby != "")
+                _log.Debug("orderby : " + orderby);
 
-            WAHBitArray ba = new WAHBitArray();
-            var delbits = _deletedRows.GetBits();
-            if (filter != "")
-            {
-                LambdaExpression le = null;
-                if (_lambdacache.TryGetValue(filter, out le) == false)
-                {
-                    le = System.Linq.Dynamic.DynamicExpression.ParseLambda(_view.Schema, typeof(bool), filter, null);
-                    _lambdacache.Add(filter, le);
-                }
-                QueryVisitor qv = new QueryVisitor(QueryColumnExpression);
-                qv.Visit(le.Body);
-
-                ba = ((WAHBitArray)qv._bitmap.Pop()).AndNot(delbits);
-            }
-            else
-                ba = WAHBitArray.Fill(_viewData.Count()).AndNot(delbits);
-
+            var ba = GenerateBitmap(filter);
             var order = SortBy(orderby);
             bool desc = false;
             if (orderby.ToLower().Contains(" desc"))
@@ -328,57 +306,7 @@ namespace RaptorDB.Views
             _log.Debug("query bitmap done (ms) : " + FastDateTime.Now.Subtract(dt).TotalMilliseconds);
             dt = FastDateTime.Now;
             // exec query return rows
-            return ReturnRows<object>(ba, null, start, count, order, desc);
-        }
-
-        internal Result<object> Query<T>(Expression<Predicate<T>> filter, int start, int count)
-        {
-            return Query<T>(filter, start, count, "");
-        }
-
-        // FEATURE : add query caching here
-        internal Result<object> Query<T>(Expression<Predicate<T>> filter, int start, int count, string orderby)
-        {
-            if (filter == null)
-                return Query(start, count);
-
-            DateTime dt = FastDateTime.Now;
-            _log.Debug("query : " + _view.Name);
-
-            WAHBitArray ba = new WAHBitArray();
-
-            QueryVisitor qv = new QueryVisitor(QueryColumnExpression);
-            qv.Visit(filter);
-            var delbits = _deletedRows.GetBits();
-            ba = ((WAHBitArray)qv._bitmap.Pop()).AndNot(delbits);
-            List<T> trows = null;
-            if (_viewmanager.inTransaction())
-            {
-                // query from transaction own data
-                tran_data data = null;
-                if (_transactions.TryGetValue(Thread.CurrentThread.ManagedThreadId, out data))
-                {
-                    List<T> rrows = new List<T>();
-                    foreach (var kv in data.rows)
-                    {
-                        foreach (var r in kv.Value)
-                        {
-                            object o = FastCreateObject(_view.Schema);
-                            rrows.Add((T)_rowfiller(o, r));
-                        }
-                    }
-                    trows = rrows.FindAll(filter.Compile());
-                }
-            }
-
-            var order = SortBy(orderby);
-            bool desc = false;
-            if (orderby.ToLower().Contains(" desc"))
-                desc = true;
-            _log.Debug("query bitmap done (ms) : " + FastDateTime.Now.Subtract(dt).TotalMilliseconds);
-            dt = FastDateTime.Now;
-            // exec query return rows
-            return ReturnRows<T>(ba, trows, start, count, order, desc);
+            return ReturnRowsTyped<object>(ba, null, start, count, order, desc);
         }
 
         internal Result<object> Query(int start, int count)
@@ -431,7 +359,6 @@ namespace RaptorDB.Views
             _log.Debug("query rows count : " + rows.Count.ToString("#,0"));
             ret.OK = true;
             ret.Count = rows.Count;
-            //ret.TotalCount = rows.Count;
             ret.Rows = rows;
             return ret;
         }
@@ -456,7 +383,7 @@ namespace RaptorDB.Views
         {
             try
             {
-                lock (_stlock)
+                lock (_savetimerlock)
                     _saveTimer.Enabled = false;
                 while (_stsaving)
                     Thread.Sleep(1);
@@ -498,7 +425,7 @@ namespace RaptorDB.Views
         {
             DeleteRowsWith(docid);
 
-            InvalidateSortCache();
+            InvalidateCaches();
         }
 
         #region [  private methods  ]
@@ -528,7 +455,7 @@ namespace RaptorDB.Views
             {
                 FieldInfo c = null;
                 PropertyInfo p = null;
-                if (isField(fields, col.Key, out c)) 
+                if (isField(fields, col.Key, out c))
                 {
                     var end = il.DefineLabel();
 
@@ -608,7 +535,7 @@ namespace RaptorDB.Views
             return false;
         }
 
-        private Result<object> ReturnRows<T>(WAHBitArray ba, List<T> trows, int start, int count, List<int> orderby, bool descending)
+        private Result<object> ReturnRowsObject<T>(WAHBitArray ba, List<T> trows, int start, int count, List<int> orderby, bool descending)
         {
             DateTime dt = FastDateTime.Now;
             List<object> rows = new List<object>();
@@ -689,14 +616,14 @@ namespace RaptorDB.Views
             if (b != null)
             {
                 object o = FastCreateObject(_view.Schema);
-                object[] data = (object[])fastBinaryJSON.BJSON.ToObject(b);
+                object[] data = (object[])BJSON.ToObject(b);
                 rows.Add((T)_rowfiller(o, data));
                 return true;
             }
             return false;
         }
 
-        private Result<T> ReturnRows2<T>(WAHBitArray ba, List<T> trows, int start, int count, List<int> orderby, bool descending)
+        private Result<T> ReturnRowsTyped<T>(WAHBitArray ba, List<T> trows, int start, int count, List<int> orderby, bool descending)
         {
             DateTime dt = FastDateTime.Now;
             List<T> rows = new List<T>();
@@ -797,14 +724,14 @@ namespace RaptorDB.Views
             }
         }
 
-        MethodInfo insertmethod = null;
+        MethodInfo _insertmethod = null;
         bool _rebuilding = false;
         private void RebuildFromScratch(IDocStorage<Guid> docs)
         {
             _rebuilding = true;
             try
             {
-                insertmethod = this.GetType().GetMethod("Insert", BindingFlags.Instance | BindingFlags.NonPublic);
+                _insertmethod = this.GetType().GetMethod("Insert", BindingFlags.Instance | BindingFlags.NonPublic);
                 _log.Debug("Rebuilding view from scratch...");
                 _log.Debug("View = " + _view.Name);
                 DateTime dt = FastDateTime.Now;
@@ -838,7 +765,7 @@ namespace RaptorDB.Views
                             }
                             else if (t.IsSubclassOf(basetype) || t == basetype)
                             {
-                                var m = insertmethod.MakeGenericMethod(new Type[] { obj.GetType() });
+                                var m = _insertmethod.MakeGenericMethod(new Type[] { obj.GetType() });
                                 m.Invoke(this, new object[] { meta.key, obj });
                                 dc++;
                             }
@@ -858,6 +785,7 @@ namespace RaptorDB.Views
                 _log.Error("Rebuilding View failed : " + _view.Name, ex);
             }
             _rebuilding = false;
+            InvalidateCaches();
         }
 
         private object CreateObject(byte[] b)
@@ -868,12 +796,12 @@ namespace RaptorDB.Views
                 return JSON.ToObject(Encoding.ASCII.GetString(b));
         }
 
-        private void CreateLoadIndexes(ViewRowDefinition viewRowDefinition)
+        private void CreateLoadIndexes()
         {
             int i = 0;
             _indexes.Add(_docid, new TypeIndexes<Guid>(_Path, _docid, 16));
             // load indexes
-            foreach (var c in viewRowDefinition.Columns)
+            foreach (var c in _schema.Columns)
             {
                 if (c.Key != "docid")
                     _indexes.Add(_schema.Columns[i].Key,
@@ -882,13 +810,22 @@ namespace RaptorDB.Views
                                 _schema.Columns[i].Value));
                 i++;
             }
+            i = 0;
+            foreach (var c in _datecolumns.Columns)
+            {
+                _indexes.Add(_datecolumns.Columns[i].Key,
+                          CreateIndex(
+                            _datecolumns.Columns[i].Key,
+                            _datecolumns.Columns[i].Value));
+                i++;
+            }
         }
 
         private void GenerateSchemaColumns(ViewBase _view)
         {
             // generate schema columns from schema
             _schema = new ViewRowDefinition();
-            _schema.Name = _view.Name;
+            _datecolumns = new ViewRowDefinition();
 
             foreach (var p in _view.Schema.GetProperties())
             {
@@ -925,6 +862,14 @@ namespace RaptorDB.Views
                             _idxlen.Add(p.Name, b);
                         if (_view.StringIndexLength.TryGetValue(p.Name.ToLower(), out b))
                             _idxlen.Add(p.Name, b);
+                    }
+                    if (t == typeof(DateTime))
+                    {
+                        _datecolumns.Add(p.Name + "_$Year", typeof(int));
+                        _datecolumns.Add(p.Name + "_$Month", typeof(int));
+                        _datecolumns.Add(p.Name + "_$Day", typeof(int));
+                        _datecolumns.Add(p.Name + "_$Hour", typeof(int));
+                        _datecolumns.Add(p.Name + "_$Minute", typeof(int));
                     }
                 }
             }
@@ -963,6 +908,14 @@ namespace RaptorDB.Views
                             _idxlen.Add(f.Name, b);
                         if (_view.StringIndexLength.TryGetValue(f.Name.ToLower(), out b))
                             _idxlen.Add(f.Name, b);
+                    }
+                    if (t == typeof(DateTime))
+                    {
+                        _datecolumns.Add(f.Name + "_$Year", typeof(int));
+                        _datecolumns.Add(f.Name + "_$Month", typeof(int));
+                        _datecolumns.Add(f.Name + "_$Day", typeof(int));
+                        _datecolumns.Add(f.Name + "_$Hour", typeof(int));
+                        _datecolumns.Add(f.Name + "_$Minute", typeof(int));
                     }
                 }
             }
@@ -1019,7 +972,6 @@ namespace RaptorDB.Views
                     var c = _schema.Columns[i];
                     foreach (var g in getters)
                     {
-                        //var g = getters[ii];
                         if (g.Name == c.Key)
                         {
                             r[i] = g.Getter(obj);
@@ -1040,10 +992,24 @@ namespace RaptorDB.Views
 
             for (int i = 0; i < c; i++)
             {
+                string colname = _colnames[i];
                 object d = row[i];
-                var idx = _indexes[_colnames[i]];
+                var idx = _indexes[colname];
                 if (idx != null)
                     idx.Set(d, rownum);
+                foreach (var dc in _datecolumns.Columns)
+                {
+                    if (dc.Key.ToLower().StartsWith(colname.ToLower() + "_$"))
+                    {
+                        DateTime dt = (DateTime)d;
+                        _indexes[colname + "_$Year"].Set(dt.Year, rownum);
+                        _indexes[colname + "_$Month"].Set(dt.Month, rownum);
+                        _indexes[colname + "_$Day"].Set(dt.Day, rownum);
+                        _indexes[colname + "_$Hour"].Set(dt.Hour, rownum);
+                        _indexes[colname + "_$Minute"].Set(dt.Minute, rownum);
+                        break;
+                    }
+                }
             }
         }
 
@@ -1092,6 +1058,15 @@ namespace RaptorDB.Views
             else
                 return _indexes[colname].Query(exp, from, _viewData.Count());
         }
+
+        private WAHBitArray QueryColumnExpressionFromTo(string colname, object from, object to)
+        {
+            int i = 0;
+            if (_nocase.TryGetValue(colname, out i)) // no case query
+                return _indexes[colname].Query(("" + from).ToLowerInvariant(), ("" + to).ToLowerInvariant(), _viewData.Count());
+            else
+                return _indexes[colname].Query(from, to, _viewData.Count());
+        }
         #endregion
 
         internal int Count<T>(Expression<Predicate<T>> filter)
@@ -1102,13 +1077,7 @@ namespace RaptorDB.Views
                 totcount = internalCount();
             else
             {
-                WAHBitArray ba = new WAHBitArray();
-
-                QueryVisitor qv = new QueryVisitor(QueryColumnExpression);
-                qv.Visit(filter);
-                var delbits = _deletedRows.GetBits();
-                ba = ((WAHBitArray)qv._bitmap.Pop()).AndNot(delbits);
-
+                var ba = GenerateBitmap(filter);
                 totcount = (int)ba.CountOnes();
             }
             _log.Debug("Count items = " + totcount);
@@ -1126,24 +1095,77 @@ namespace RaptorDB.Views
             else
             {
                 _log.Debug("Count filter : " + filter);
-                WAHBitArray ba = new WAHBitArray();
-
-                LambdaExpression le = null;
-                if (_lambdacache.TryGetValue(filter, out le) == false)
-                {
-                    le = System.Linq.Dynamic.DynamicExpression.ParseLambda(_view.Schema, typeof(bool), filter, null);
-                    _lambdacache.Add(filter, le);
-                }
-                QueryVisitor qv = new QueryVisitor(QueryColumnExpression);
-                qv.Visit(le.Body);
-                var delbits = _deletedRows.GetBits();
-                ba = ((WAHBitArray)qv._bitmap.Pop()).AndNot(delbits);
-
+                var ba = GenerateBitmap(filter);
                 totcount = (int)ba.CountOnes();
             }
             _log.Debug("Count items = " + totcount);
             _log.Debug("Count time (ms) : " + FastDateTime.Now.Subtract(dt).TotalMilliseconds);
             return totcount;
+        }
+
+        private WAHBitArray GenerateBitmap<T>(Expression<Predicate<T>> filter)
+        {
+            WAHBitArray ba = new WAHBitArray();
+            // check query cache
+            _queryCache.TryGetValue(filter, out ba);
+            if (ba == null)
+            {
+                ba = new WAHBitArray();
+                QueryVisitor qv = new QueryVisitor(QueryColumnExpression, QueryColumnExpressionFromTo);
+                qv.Visit(filter);
+                var delbits = _deletedRows.GetBits();
+                if (qv._bitmap.Count > 0)
+                {
+                    WAHBitArray qbits = (WAHBitArray)qv._bitmap.Pop();
+                    ba = qbits.AndNot(delbits);
+                }
+                else if (qv._stack.Count > 0)
+                {
+                    var val = Convert.ToBoolean(qv._stack.Pop());
+                    if (val == true)
+                        ba = new WAHBitArray().Not(this.internalCount()).AndNot(delbits);
+                }
+                _queryCache.Add(filter, ba);
+            }
+            else
+                _log.Debug("  found in cache");
+            return ba;
+        }
+
+        private WAHBitArray GenerateBitmap(string filter)
+        {
+            WAHBitArray ba = new WAHBitArray();
+            // check query cache
+            _queryCache.TryGetValue(filter, out ba);
+            if (ba == null)
+            {
+                ba = new WAHBitArray();
+                LambdaExpression le = null;
+                //if (_lambdacache.TryGetValue(filter, out le) == false)
+                {
+                    le = System.Linq.Dynamic.DynamicExpression.ParseLambda(_view.Schema, typeof(bool), filter, null);
+                    //  _lambdacache.Add(filter, le);
+                }
+                QueryVisitor qv = new QueryVisitor(QueryColumnExpression, QueryColumnExpressionFromTo);
+                qv.Visit(le.Body);
+                var delbits = _deletedRows.GetBits();
+                if (qv._bitmap.Count > 0)
+                {
+                    WAHBitArray qbits = (WAHBitArray)qv._bitmap.Pop();
+                    ba = qbits.AndNot(delbits);
+                }
+                else if (qv._stack.Count > 0)
+                {
+                    var val = Convert.ToBoolean(qv._stack.Pop());
+                    if (val == true)
+                        ba = new WAHBitArray().Not(this.internalCount()).AndNot(delbits);
+                }
+                _queryCache.Add(filter, ba);
+            }
+            else
+                _log.Debug("  found in cache");
+
+            return ba;
         }
 
         private int internalCount()
@@ -1156,26 +1178,13 @@ namespace RaptorDB.Views
             return c - cc;
         }
 
-        internal Result<T> Query2<T>(Expression<Predicate<T>> filter, int start, int count)
-        {
-            return Query2<T>(filter, start, count, "");
-        }
-
-        internal Result<T> Query2<T>(Expression<Predicate<T>> filter, int start, int count, string orderby)
+        internal Result<T> QueryWithTypedResult<T>(Expression<Predicate<T>> filter, int start, int count, string orderby)
         {
             DateTime dt = FastDateTime.Now;
             _log.Debug("query : " + _view.Name);
 
-            WAHBitArray ba = new WAHBitArray();
+            var ba = GenerateBitmap(filter);
 
-            QueryVisitor qv = new QueryVisitor(QueryColumnExpression);
-            qv.Visit(filter);
-            var delbits = _deletedRows.GetBits();
-            if (qv._bitmap.Count > 0)
-            {
-                WAHBitArray qbits = (WAHBitArray)qv._bitmap.Pop();
-                ba = qbits.AndNot(delbits);
-            }
             List<T> trows = null;
             if (_viewmanager.inTransaction())
             {
@@ -1202,37 +1211,22 @@ namespace RaptorDB.Views
             _log.Debug("query bitmap done (ms) : " + FastDateTime.Now.Subtract(dt).TotalMilliseconds);
             dt = FastDateTime.Now;
             // exec query return rows
-            return ReturnRows2<T>(ba, trows, start, count, order, desc);
+            return ReturnRowsTyped<T>(ba, trows, start, count, order, desc);
         }
 
-        internal Result<T> Query2<T>(string filter, int start, int count)
-        {
-            return Query2<T>(filter, start, count, "");
-        }
-
-        internal Result<T> Query2<T>(string filter, int start, int count, string orderby)
+        internal Result<T> QueryWithTypedResult<T>(string filter, int start, int count, string orderby)
         {
             DateTime dt = FastDateTime.Now;
             _log.Debug("query : " + _view.Name);
             _log.Debug("query : " + filter);
-            _log.Debug("order by : " + orderby);
+            if (orderby != "")
+                _log.Debug("order by : " + orderby);
 
             WAHBitArray ba = new WAHBitArray();
             var delbits = _deletedRows.GetBits();
 
             if (filter != "")
-            {
-                LambdaExpression le = null;
-                if (_lambdacache.TryGetValue(filter, out le) == false)
-                {
-                    le = System.Linq.Dynamic.DynamicExpression.ParseLambda(_view.Schema, typeof(bool), filter, null);
-                    _lambdacache.Add(filter, le);
-                }
-                QueryVisitor qv = new QueryVisitor(QueryColumnExpression);
-                qv.Visit(le.Body);
-
-                ba = ((WAHBitArray)qv._bitmap.Pop()).AndNot(delbits);
-            }
+                ba = GenerateBitmap(filter);
             else
                 ba = WAHBitArray.Fill(_viewData.Count()).AndNot(delbits);
 
@@ -1243,7 +1237,7 @@ namespace RaptorDB.Views
             _log.Debug("query bitmap done (ms) : " + FastDateTime.Now.Subtract(dt).TotalMilliseconds);
             dt = FastDateTime.Now;
             // exec query return rows
-            return ReturnRows2<T>(ba, null, start, count, order, desc);
+            return ReturnRowsTyped<T>(ba, null, start, count, order, desc);
         }
 
         private SafeDictionary<string, List<int>> _sortcache = new SafeDictionary<string, List<int>>();
@@ -1314,22 +1308,19 @@ namespace RaptorDB.Views
         internal int ViewDelete<T>(Expression<Predicate<T>> filter)
         {
             _log.Debug("delete : " + _view.Name);
-            if (_isDirty == false)
-                WriteDirtyFile();
-            QueryVisitor qv = new QueryVisitor(QueryColumnExpression);
-            qv.Visit(filter);
-            var delbits = _deletedRows.GetBits();
-            int count = qv._bitmap.Count;
+
+            var ba = GenerateBitmap(filter);
+            long count = ba.CountOnes();
             if (count > 0)
             {
-                WAHBitArray qbits = (WAHBitArray)qv._bitmap.Pop();
-                _deletedRows.InPlaceOR(qbits);
-                count = (int)qbits.CountOnes();
+                _deletedRows.InPlaceOR(ba);
+                _log.Debug("Deleted rows = " + count);
+                InvalidateCaches();
+                if (_isDirty == false)
+                    WriteDirtyFile();
             }
-            _log.Debug("Deleted rows = " + count);
 
-            InvalidateSortCache();
-            return count;
+            return (int)count;
         }
 
         private object _dfile = new object();
@@ -1346,30 +1337,23 @@ namespace RaptorDB.Views
         internal int ViewDelete(string filter)
         {
             _log.Debug("delete : " + _view.Name);
-            if (_isDirty == false)
-                WriteDirtyFile();
-            int count = 0;
+
+            long count = 0;
             if (filter != "")
             {
-                LambdaExpression le = null;
-                if (_lambdacache.TryGetValue(filter, out le) == false)
-                {
-                    le = System.Linq.Dynamic.DynamicExpression.ParseLambda(_view.Schema, typeof(bool), filter, null);
-                    _lambdacache.Add(filter, le);
-                }
-                QueryVisitor qv = new QueryVisitor(QueryColumnExpression);
-                qv.Visit(le.Body);
-                count = qv._bitmap.Count;
+                var ba = GenerateBitmap(filter);
+                count = ba.CountOnes();
                 if (count > 0)
                 {
-                    WAHBitArray qbits = (WAHBitArray)qv._bitmap.Pop();
-                    _deletedRows.InPlaceOR(qbits);
-                    count = (int)qbits.CountOnes();
+                    _deletedRows.InPlaceOR(ba);
+
+                    InvalidateCaches();
+                    if (_isDirty == false)
+                        WriteDirtyFile();
                 }
             }
 
-            InvalidateSortCache();
-            return count;
+            return (int)count;
         }
 
         internal bool ViewInsert(Guid id, object row)
@@ -1379,14 +1363,103 @@ namespace RaptorDB.Views
 
             var r = ExtractRows(l);
             InsertRowsWithIndexUpdate(id, r);
-
-            InvalidateSortCache();
+            if (l.Count > 0)
+                InvalidateCaches();
             return true;
         }
 
-        private void InvalidateSortCache()
+        private void InvalidateCaches()
         {
+            // invalidate sort cache
             _sortcache = new SafeDictionary<string, List<int>>();
+            // inavidate query cache
+            _queryCache = new SafeDictionary<object, WAHBitArray>();
         }
+
+        #region [ removed ]
+        //SafeDictionary<string, LambdaExpression> _lambdacache = new SafeDictionary<string, LambdaExpression>();
+        //internal Result<object> Query(string filter, int start, int count)
+        //{
+        //    return Query(filter, start, count, "");
+        //}
+
+        //internal Result<object> Query<T>(Expression<Predicate<T>> filter, int start, int count)
+        //{
+        //    return Query<T>(filter, start, count, "");
+        //}
+
+        //internal Result<object> Query<T>(Expression<Predicate<T>> filter, int start, int count, string orderby)
+        //{
+        //    if (filter == null)
+        //        return Query(start, count);
+
+        //    DateTime dt = FastDateTime.Now;
+        //    _log.Debug("query : " + _view.Name);
+
+        //    WAHBitArray ba = new WAHBitArray();
+
+        //    _queryCache.TryGetValue(filter, out ba);
+        //    if (ba == null)
+        //    {
+        //        ba = new WAHBitArray();
+        //        QueryVisitor qv = new QueryVisitor(QueryColumnExpression, QueryColumnExpFromTo);
+        //        qv.Visit(filter);
+        //        var delbits = _deletedRows.GetBits();
+        //        if (qv._bitmap.Count > 0)
+        //        {
+        //            WAHBitArray qbits = (WAHBitArray)qv._bitmap.Pop();
+        //            ba = qbits.AndNot(delbits);
+        //        }
+        //        else if (qv._stack.Count > 0)
+        //        {
+        //            var val = Convert.ToBoolean(qv._stack.Pop());
+        //            if (val == true)
+        //                ba = new WAHBitArray().Not(this.internalCount()).AndNot(delbits);
+        //        }
+        //        _queryCache.Add(filter, ba);
+        //    }
+        //    else
+        //        _log.Debug("  found in cache");
+
+        //    List<T> trows = null;
+        //    if (_viewmanager.inTransaction())
+        //    {
+        //        // query from transaction own data
+        //        tran_data data = null;
+        //        if (_transactions.TryGetValue(Thread.CurrentThread.ManagedThreadId, out data))
+        //        {
+        //            List<T> rrows = new List<T>();
+        //            foreach (var kv in data.rows)
+        //            {
+        //                foreach (var r in kv.Value)
+        //                {
+        //                    object o = FastCreateObject(_view.Schema);
+        //                    rrows.Add((T)_rowfiller(o, r));
+        //                }
+        //            }
+        //            trows = rrows.FindAll(filter.Compile());
+        //        }
+        //    }
+
+        //    var order = SortBy(orderby);
+        //    bool desc = false;
+        //    if (orderby.ToLower().Contains(" desc"))
+        //        desc = true;
+        //    _log.Debug("query bitmap done (ms) : " + FastDateTime.Now.Subtract(dt).TotalMilliseconds);
+        //    dt = FastDateTime.Now;
+        //    // exec query return rows
+        //    return ReturnRowsObject<T>(ba, trows, start, count, order, desc);
+        //}
+
+        //internal Result<T> Query2<T>(Expression<Predicate<T>> filter, int start, int count)
+        //{
+        //    return Query2<T>(filter, start, count, "");
+        //}
+
+        //internal Result<T> Query2<T>(string filter, int start, int count)
+        //{
+        //    return Query2<T>(filter, start, count, "");
+        //}
+        #endregion
     }
 }

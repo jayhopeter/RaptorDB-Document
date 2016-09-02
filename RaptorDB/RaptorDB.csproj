@@ -105,6 +105,7 @@
     <Compile Include="Indexes\Indexes.cs" />
     <Compile Include="Indexes\IndexFile.cs" />
     <Compile Include="Indexes\MGIndex.cs" />
+    <Compile Include="Indexes\tokenizer.cs" />
     <Compile Include="Properties\Resources.Designer.cs">
       <AutoGen>True</AutoGen>
       <DesignTime>True</DesignTime>
@@ -115,7 +116,8 @@
     <Compile Include="Replication\Packets.cs" />
     <Compile Include="Replication\ReplicationClient.cs" />
     <Compile Include="Replication\ReplicationServer.cs" />
-    <Compile Include="REST\RestServer.cs" />
+    <Compile Include="REST\aWebServer.cs" />
+    <Compile Include="REST\rdbRest.cs" />
     <Compile Include="Storage\KeyStore.cs" />
     <Compile Include="RaptorDB.cs" />
     <Compile Include="Storage\KeyStoreHF.cs" />
@@ -133,6 +135,7 @@
   <ItemGroup>
     <None Include="..\RaptorDB_Doc.nuspec">
       <Link>RaptorDB_Doc.nuspec</Link>
+      <SubType>Designer</SubType>
     </None>
     <None Include="Replication\Readme.txt" />
   </ItemGroup>

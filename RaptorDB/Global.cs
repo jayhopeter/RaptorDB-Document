@@ -59,9 +59,9 @@
         /// </summary>
         public static int BackgroundFullTextIndexBatchSize = 10000;
         /// <summary>
-        /// Free memory checking timer (default = 1800 sec ~ 30 min)
+        /// Free memory checking timer (default = 300 sec ~ 5 min)
         /// </summary>
-        public static int FreeMemoryTimerSeconds = 1800;
+        public static int FreeMemoryTimerSeconds = 5 * 60;// 1800;
         /// <summary>
         /// Memory usage limit for internal caching (default = 100 Mb) [using GC.GetTotalMemory()]
         /// </summary>
@@ -81,7 +81,7 @@
         /// <summary>
         /// Process inbox timer (default = 60 sec)
         /// </summary>
-        public static int ProcessInboxTimerSeconds = 10;
+        public static int ProcessInboxTimerSeconds = 60;
         /// <summary>
         /// Split the data storage files in MegaBytes (default 0 = off) [500 = 500mb]
         /// <para> - You can set and unset this value anytime and it will operate from that point on.</para>
@@ -115,4 +115,6 @@
         /// </summary>
         public static bool LocalOnlyWebStudio = true;
     }
+
+
 }

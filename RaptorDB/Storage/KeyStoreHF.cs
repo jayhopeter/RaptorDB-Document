@@ -6,21 +6,21 @@ using System.Linq;
 
 namespace RaptorDB
 {
-    internal class AllocationBlock
-    {
-        public string key;
-        public byte keylen;
-        public int datalength;
-        public bool isCompressed;
-        public bool isBinaryJSON;
-        public bool deleteKey;
-        public List<int> Blocks = new List<int>();
-        public int blocknumber;
-    }
-
     // high frequency key value store
     internal class KeyStoreHF : IKeyStoreHF
     {
+        internal class AllocationBlock
+        {
+            public string key;
+            public byte keylen;
+            public int datalength;
+            public bool isCompressed;
+            public bool isBinaryJSON;
+            public bool deleteKey;
+            public List<int> Blocks = new List<int>();
+            public int blocknumber;
+        }
+
         MGIndex<string> _keys;
         StorageFileHF _datastore;
         object _lock = new object();
@@ -54,20 +54,20 @@ namespace RaptorDB
             }
             _datastore = new StorageFileHF(_Path + "data.mghf", Global.HighFrequencyKVDiskBlockSize);
             _keys = new MGIndex<string>(_Path, "keys.idx", 255, /*Global.PageItemCount,*/ false);
-
+            _datastore.Initialize();
             _BlockSize = _datastore.GetBlockSize();
         }
 
         // mgindex special storage for strings ctor -> no idx file
         //    use SaveData() GetData()
-        public KeyStoreHF(string folder, string filename) 
+        public KeyStoreHF(string folder, string filename)
         {
             _Path = folder;
             Directory.CreateDirectory(_Path);
             if (_Path.EndsWith(_S) == false) _Path += _S;
 
             _datastore = new StorageFileHF(_Path + filename, Global.HighFrequencyKVDiskBlockSize);
-
+            _datastore.Initialize();
             _BlockSize = _datastore.GetBlockSize();
         }
 
@@ -197,7 +197,7 @@ namespace RaptorDB
                     //Directory.Delete(_Path + "old", true); // FEATURE : delete or keep?
                     _log.Debug("Re-opening storage file");
                     _datastore = new StorageFileHF(_Path + "data.mghf", Global.HighFrequencyKVDiskBlockSize);
-                    _keys = new MGIndex<string>(_Path, "keys.idx", 255, /*Global.PageItemCount,*/ false);
+                    _keys = new MGIndex<string>(_Path, "keys.idx", 255, false);
 
                     _BlockSize = _datastore.GetBlockSize();
                 }
